@@ -1,0 +1,6 @@
+{
+  "name": "AuraForm - Next-Gen Experience Form Builder",
+  "description": "Production-grade form builder SaaS where every form is a designed experience. Conversational, multi-step, logic-driven, and AI-assisted forms with rich analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
