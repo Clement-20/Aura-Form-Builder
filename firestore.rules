@@ -1,0 +1,537 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Hardened Primitives
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwnerUid(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function memberDocPath(teamId, uid) {
+      return /databases/$(database)/documents/teams/$(teamId)/members/$(uid);
+    }
+
+    function isTeamMember(teamId) {
+      return isSignedIn() && exists(memberDocPath(teamId, request.auth.uid));
+    }
+
+    function teamMemberRole(teamId) {
+      return get(memberDocPath(teamId, request.auth.uid)).data.role;
+    }
+
+    function isTeamOwner(teamId) {
+      return isTeamMember(teamId) && teamMemberRole(teamId) == 'owner';
+    }
+
+    function canEditTeam(teamId) {
+      return isTeamMember(teamId) && (teamMemberRole(teamId) == 'owner' || teamMemberRole(teamId) == 'editor');
+    }
+
+    // =========================================================================
+    // Entity Validation Blueprints (Anti-Update-Gap)
+    // =========================================================================
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'color', 'plan', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'color', 'plan', 'updatedAt'])
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500))
+        && data.color is string && data.color.size() >= 4 && data.color.size() <= 20
+        && data.plan in ['free', 'pro', 'enterprise']
+        && data.updatedAt == request.time;
+    }
+
+    function isValidUserTeamMembership(data, userId, teamId) {
+      return data.keys().hasAll(['teamId', 'teamName', 'role', 'userId', 'joinedAt'])
+        && data.keys().hasOnly(['teamId', 'teamName', 'role', 'userId', 'joinedAt'])
+        && data.teamId == teamId
+        && isValidId(data.teamId)
+        && data.userId == userId
+        && isValidId(data.userId)
+        && data.teamName is string && data.teamName.size() >= 1 && data.teamName.size() <= 100
+        && data.role in ['owner', 'editor', 'viewer']
+        && data.joinedAt is timestamp;
+    }
+
+    function isValidTeam(data, teamId) {
+      return data.keys().hasAll(['id', 'name', 'description', 'ownerId', 'inviteCode', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'description', 'ownerId', 'inviteCode', 'createdAt', 'updatedAt'])
+        && data.id == teamId
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 300
+        && isValidId(data.ownerId)
+        && data.inviteCode is string && data.inviteCode.size() >= 6 && data.inviteCode.size() <= 32 && data.inviteCode.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    function isValidTeamMember(data, teamId, memberId) {
+      return data.keys().hasAll(['uid', 'teamId', 'displayName', 'color', 'role', 'joinedAt'])
+        && data.keys().hasOnly(['uid', 'teamId', 'displayName', 'photoURL', 'color', 'role', 'inviteCode', 'joinedAt'])
+        && data.uid == memberId
+        && isValidId(data.uid)
+        && data.teamId == teamId
+        && isValidId(data.teamId)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500))
+        && data.color is string && data.color.size() >= 4 && data.color.size() <= 20
+        && data.role in ['owner', 'editor', 'viewer']
+        && (!('inviteCode' in data) || (data.inviteCode is string && data.inviteCode.size() <= 32))
+        && data.joinedAt is timestamp;
+    }
+
+    function isValidTeamInvite(data, inviteCode) {
+      return data.keys().hasAll(['inviteCode', 'teamId', 'teamName', 'defaultRole', 'createdBy', 'active', 'createdAt'])
+        && data.keys().hasOnly(['inviteCode', 'teamId', 'teamName', 'defaultRole', 'createdBy', 'active', 'createdAt'])
+        && data.inviteCode == inviteCode
+        && data.inviteCode is string && data.inviteCode.size() >= 6 && data.inviteCode.size() <= 32 && data.inviteCode.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidId(data.teamId)
+        && data.teamName is string && data.teamName.size() >= 1 && data.teamName.size() <= 100
+        && data.defaultRole in ['editor', 'viewer']
+        && isValidId(data.createdBy)
+        && data.active is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidTeamForm(data, teamId, formId) {
+      return data.keys().hasAll([
+          'id', 'teamId', 'ownerId', 'title', 'description', 'category',
+          'layoutMode', 'theme', 'welcomeScreen', 'thankYouScreen',
+          'fields', 'steps', 'logicRules', 'settings', 'responsesCount',
+          'lastEditedBy', 'lastEditedByName', 'version', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'teamId', 'ownerId', 'title', 'description', 'category',
+          'layoutMode', 'theme', 'welcomeScreen', 'thankYouScreen',
+          'fields', 'steps', 'logicRules', 'settings', 'responsesCount',
+          'lastEditedBy', 'lastEditedByName', 'version', 'createdAt', 'updatedAt'
+        ])
+        && data.id == formId
+        && isValidId(data.id)
+        && data.teamId == teamId
+        && isValidId(data.teamId)
+        && isValidId(data.ownerId)
+        && data.title is string && data.title.size() <= 200
+        && data.description is string && data.description.size() <= 1000
+        && data.category in ['survey', 'quiz', 'registration', 'lead-gen', 'feedback', 'application']
+        && data.layoutMode in ['standard', 'conversational', 'stepped']
+        && data.theme is map
+        && data.welcomeScreen is map
+        && data.thankYouScreen is map
+        && data.fields is list && data.fields.size() <= 100
+        && (data.fields.size() == 0 || data.fields[0] is map)
+        && data.steps is list && data.steps.size() <= 30
+        && (data.steps.size() == 0 || data.steps[0] is map)
+        && data.logicRules is list && data.logicRules.size() <= 100
+        && (data.logicRules.size() == 0 || data.logicRules[0] is map)
+        && data.settings is map
+        && data.responsesCount is number && data.responsesCount >= 0
+        && data.lastEditedBy == request.auth.uid
+        && isValidId(data.lastEditedBy)
+        && data.lastEditedByName is string && data.lastEditedByName.size() >= 1 && data.lastEditedByName.size() <= 100
+        && data.version is number && data.version >= 1
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    function isValidFormPresence(data, teamId, formId, memberId) {
+      return data.keys().hasAll([
+          'uid', 'teamId', 'formId', 'displayName', 'color', 'role',
+          'activeFieldId', 'activeTab', 'lastSeenAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'teamId', 'formId', 'displayName', 'photoURL', 'color', 'role',
+          'activeFieldId', 'activeTab', 'lastSeenAt'
+        ])
+        && data.uid == memberId
+        && data.uid == request.auth.uid
+        && isValidId(data.uid)
+        && data.teamId == teamId
+        && data.formId == formId
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500))
+        && data.color is string && data.color.size() >= 4 && data.color.size() <= 20
+        && data.role in ['owner', 'editor', 'viewer']
+        && data.activeFieldId is string && data.activeFieldId.size() <= 128
+        && data.activeTab in ['build', 'theme', 'logic', 'settings', 'share', 'analytics']
+        && data.lastSeenAt == request.time;
+    }
+
+    function isValidFormComment(data, teamId, formId, commentId) {
+      return data.keys().hasAll([
+          'id', 'teamId', 'formId', 'fieldId', 'authorId', 'authorName',
+          'authorColor', 'text', 'resolved', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'teamId', 'formId', 'fieldId', 'authorId', 'authorName',
+          'authorPhotoURL', 'authorColor', 'text', 'resolved', 'createdAt', 'updatedAt'
+        ])
+        && data.id == commentId
+        && isValidId(data.id)
+        && data.teamId == teamId
+        && data.formId == formId
+        && data.fieldId is string && data.fieldId.size() <= 128
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100
+        && (!('authorPhotoURL' in data) || (data.authorPhotoURL is string && data.authorPhotoURL.size() <= 500))
+        && data.authorColor is string && data.authorColor.size() >= 4 && data.authorColor.size() <= 20
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 1000
+        && data.resolved is bool
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    function isValidFormActivity(data, teamId, formId, activityId) {
+      return data.keys().hasAll([
+          'id', 'teamId', 'formId', 'authorId', 'authorName', 'authorColor',
+          'action', 'summary', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'teamId', 'formId', 'authorId', 'authorName', 'authorColor',
+          'action', 'summary', 'createdAt'
+        ])
+        && data.id == activityId
+        && isValidId(data.id)
+        && data.teamId == teamId
+        && data.formId == formId
+        && data.authorId == request.auth.uid
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100
+        && data.authorColor is string && data.authorColor.size() >= 4 && data.authorColor.size() <= 20
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 60
+        && data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 240
+        && data.createdAt == request.time;
+    }
+
+    // =========================================================================
+    // 1. Private User Profiles (Strict PII Isolation)
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && isOwnerUid(userId);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwnerUid(userId)
+        && isValidUserProfile(incoming(), userId);
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwnerUid(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'color', 'plan', 'updatedAt']);
+      allow delete: if false;
+
+      // User's Team Membership Directory (Secure owner-scoped list)
+      match /teamMemberships/{teamId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(teamId) && isOwnerUid(userId);
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(teamId)
+          && isValidUserTeamMembership(incoming(), userId, teamId)
+          && incoming().joinedAt == request.time
+          && isOwnerUid(userId)
+          && existsAfter(memberDocPath(teamId, userId))
+          && getAfter(memberDocPath(teamId, userId)).data.role == incoming().role;
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(teamId)
+          && isValidUserTeamMembership(incoming(), userId, teamId)
+          && incoming().teamId == existing().teamId
+          && incoming().userId == existing().userId
+          && incoming().joinedAt == existing().joinedAt
+          && (
+            (isTeamOwner(teamId) && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'teamName']))
+          );
+        allow delete: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(teamId)
+          && (isOwnerUid(userId) || isTeamOwner(teamId));
+      }
+    }
+
+    // =========================================================================
+    // 2. Shareable Team Invites (Single-Doc Lookup Only — No List Scraping)
+    // =========================================================================
+    match /teamInvites/{inviteCode} {
+      allow get: if isVerifiedUser() && isValidId(inviteCode);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(inviteCode)
+        && isValidTeamInvite(incoming(), inviteCode)
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && (
+          isTeamOwner(incoming().teamId)
+          || (
+            existsAfter(/databases/$(database)/documents/teams/$(incoming().teamId))
+            && getAfter(/databases/$(database)/documents/teams/$(incoming().teamId)).data.ownerId == request.auth.uid
+          )
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(inviteCode)
+        && isValidTeamInvite(incoming(), inviteCode)
+        && incoming().inviteCode == existing().inviteCode
+        && incoming().teamId == existing().teamId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && isTeamOwner(existing().teamId)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['teamName', 'defaultRole', 'active']);
+      allow delete: if isVerifiedUser()
+        && isValidId(inviteCode)
+        && isTeamOwner(existing().teamId);
+    }
+
+    // =========================================================================
+    // 3. Teams & Sub-Collections (Master Gate Enforced)
+    // =========================================================================
+    match /teams/{teamId} {
+      allow get: if isSignedIn() && isValidId(teamId) && isTeamMember(teamId);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(teamId)
+        && isValidTeam(incoming(), teamId)
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && existsAfter(memberDocPath(teamId, request.auth.uid))
+        && getAfter(memberDocPath(teamId, request.auth.uid)).data.role == 'owner';
+      allow update: if isVerifiedUser()
+        && isValidId(teamId)
+        && isValidTeam(incoming(), teamId)
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && isTeamOwner(teamId)
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['inviteCode', 'updatedAt'])
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(teamId)
+        && isTeamOwner(teamId);
+
+      // 3a. Team Roster (Master Gate Source of Truth)
+      match /members/{memberId} {
+        allow get: if isSignedIn() && isValidId(teamId) && isValidId(memberId) && isTeamMember(teamId);
+        allow list: if isSignedIn() && resource.data.teamId == teamId && isTeamMember(teamId);
+        allow create: if isVerifiedUser()
+          && isValidId(teamId)
+          && isValidId(memberId)
+          && isValidTeamMember(incoming(), teamId, memberId)
+          && incoming().joinedAt == request.time
+          && incoming().uid == request.auth.uid
+          && (
+            // Action A: Creating team as founder (atomic with Team creation)
+            (
+              incoming().role == 'owner'
+              && existsAfter(/databases/$(database)/documents/teams/$(teamId))
+              && getAfter(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid
+            )
+            ||
+            // Action B: Joining existing team via active Invite Code (prevents self-assigned role escalation)
+            (
+              'inviteCode' in incoming()
+              && incoming().inviteCode is string
+              && incoming().inviteCode.size() >= 6
+              && exists(/databases/$(database)/documents/teamInvites/$(incoming().inviteCode))
+              && get(/databases/$(database)/documents/teamInvites/$(incoming().inviteCode)).data.active == true
+              && get(/databases/$(database)/documents/teamInvites/$(incoming().inviteCode)).data.teamId == teamId
+              && get(/databases/$(database)/documents/teamInvites/$(incoming().inviteCode)).data.defaultRole == incoming().role
+            )
+          );
+        allow update: if isVerifiedUser()
+          && isValidId(teamId)
+          && isValidId(memberId)
+          && isValidTeamMember(incoming(), teamId, memberId)
+          && incoming().uid == existing().uid
+          && incoming().teamId == existing().teamId
+          && incoming().joinedAt == existing().joinedAt
+          && (
+            // Action A: Owner updates another member's role (cannot demote self)
+            (
+              isTeamOwner(teamId)
+              && memberId != request.auth.uid
+              && incoming().role in ['editor', 'viewer']
+              && incoming().diff(existing()).affectedKeys().hasOnly(['role'])
+            )
+            ||
+            // Action B: Member updates own display profile
+            (
+              isOwnerUid(memberId)
+              && isTeamMember(teamId)
+              && incoming().role == existing().role
+              && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'color'])
+            )
+          );
+        allow delete: if isVerifiedUser()
+          && isValidId(teamId)
+          && isValidId(memberId)
+          && (
+            // Owner removes a non-owner member
+            (isTeamOwner(teamId) && memberId != request.auth.uid)
+            ||
+            // Non-owner leaves the team voluntarily
+            (isOwnerUid(memberId) && existing().role != 'owner')
+          );
+      }
+
+      // 3b. Shared Team Forms (Real-Time Co-Authoring)
+      match /forms/{formId} {
+        allow get: if isSignedIn() && isValidId(teamId) && isValidId(formId) && isTeamMember(teamId);
+        allow list: if isSignedIn() && resource.data.teamId == teamId && isTeamMember(teamId);
+        allow create: if isVerifiedUser()
+          && isValidId(teamId)
+          && isValidId(formId)
+          && isValidTeamForm(incoming(), teamId, formId)
+          && incoming().ownerId == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().version == 1
+          && canEditTeam(teamId);
+        allow update: if isVerifiedUser()
+          && isValidId(teamId)
+          && isValidId(formId)
+          && isValidTeamForm(incoming(), teamId, formId)
+          && incoming().id == existing().id
+          && incoming().teamId == existing().teamId
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().version >= existing().version
+          && canEditTeam(teamId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'description', 'category', 'layoutMode', 'theme',
+            'welcomeScreen', 'thankYouScreen', 'fields', 'steps',
+            'logicRules', 'settings', 'responsesCount',
+            'lastEditedBy', 'lastEditedByName', 'version', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedUser()
+          && isValidId(teamId)
+          && isValidId(formId)
+          && (isTeamOwner(teamId) || (canEditTeam(teamId) && existing().ownerId == request.auth.uid));
+
+        // 3c. Real-Time Collaborator Presence
+        match /presence/{memberId} {
+          allow get: if isSignedIn() && isValidId(teamId) && isValidId(formId) && isValidId(memberId) && isTeamMember(teamId);
+          allow list: if isSignedIn() && resource.data.teamId == teamId && resource.data.formId == formId && isTeamMember(teamId);
+          allow create: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(memberId)
+            && isValidFormPresence(incoming(), teamId, formId, memberId)
+            && isOwnerUid(memberId)
+            && isTeamMember(teamId)
+            && incoming().role == teamMemberRole(teamId);
+          allow update: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(memberId)
+            && isValidFormPresence(incoming(), teamId, formId, memberId)
+            && isOwnerUid(memberId)
+            && isTeamMember(teamId)
+            && incoming().uid == existing().uid
+            && incoming().teamId == existing().teamId
+            && incoming().formId == existing().formId
+            && incoming().role == teamMemberRole(teamId)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'color', 'role', 'activeFieldId', 'activeTab', 'lastSeenAt']);
+          allow delete: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(memberId)
+            && (isOwnerUid(memberId) || isTeamOwner(teamId));
+        }
+
+        // 3d. Co-Authoring Comments (Pinned to Form or Question)
+        match /comments/{commentId} {
+          allow get: if isSignedIn() && isValidId(teamId) && isValidId(formId) && isValidId(commentId) && isTeamMember(teamId);
+          allow list: if isSignedIn() && resource.data.teamId == teamId && resource.data.formId == formId && isTeamMember(teamId);
+          allow create: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(commentId)
+            && isValidFormComment(incoming(), teamId, formId, commentId)
+            && incoming().authorId == request.auth.uid
+            && incoming().resolved == false
+            && incoming().createdAt == request.time
+            && isTeamMember(teamId)
+            && exists(/databases/$(database)/documents/teams/$(teamId)/forms/$(formId));
+          allow update: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(commentId)
+            && isValidFormComment(incoming(), teamId, formId, commentId)
+            && incoming().id == existing().id
+            && incoming().teamId == existing().teamId
+            && incoming().formId == existing().formId
+            && incoming().fieldId == existing().fieldId
+            && incoming().authorId == existing().authorId
+            && incoming().createdAt == existing().createdAt
+            && (
+              // Action A: Resolve / reopen comment (any team editor/owner or author)
+              (
+                (canEditTeam(teamId) || existing().authorId == request.auth.uid)
+                && incoming().diff(existing()).affectedKeys().hasOnly(['resolved', 'updatedAt'])
+              )
+              ||
+              // Action B: Author edits own comment text
+              (
+                isTeamMember(teamId)
+                && existing().authorId == request.auth.uid
+                && incoming().diff(existing()).affectedKeys().hasOnly(['text', 'updatedAt'])
+              )
+            );
+          allow delete: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(commentId)
+            && (isTeamOwner(teamId) || (isTeamMember(teamId) && existing().authorId == request.auth.uid));
+        }
+
+        // 3e. Co-Authoring Activity Feed (Append-Only Audit Trail)
+        match /activity/{activityId} {
+          allow get: if isSignedIn() && isValidId(teamId) && isValidId(formId) && isValidId(activityId) && isTeamMember(teamId);
+          allow list: if isSignedIn() && resource.data.teamId == teamId && resource.data.formId == formId && isTeamMember(teamId);
+          allow create: if isVerifiedUser()
+            && isValidId(teamId)
+            && isValidId(formId)
+            && isValidId(activityId)
+            && isValidFormActivity(incoming(), teamId, formId, activityId)
+            && canEditTeam(teamId)
+            && exists(/databases/$(database)/documents/teams/$(teamId)/forms/$(formId));
+          allow update: if false;
+          allow delete: if false;
+        }
+      }
+    }
+  }
+}

@@ -262,6 +262,7 @@ export const ConversationalRunner: React.FC<RunnerProps> = ({
 
   // Corner radius helper
   const roundedClass = {
+    none: 'rounded-none',
     sm: 'rounded-sm',
     md: 'rounded-md',
     lg: 'rounded-xl',
@@ -506,18 +507,20 @@ export const ConversationalRunner: React.FC<RunnerProps> = ({
           <span>{form.title}</span>
         </div>
 
-        <div className="flex items-center gap-2 w-32 sm:w-44">
-          <div className="w-full h-1.5 rounded-full bg-neutral-200 overflow-hidden">
-            <div
-              className="h-full transition-all duration-300"
-              style={{
-                width: `${progressPercent}%`,
-                backgroundColor: form.theme.primaryColor,
-              }}
-            />
+        {form.settings.showProgressBar !== false && (
+          <div className="flex items-center gap-2 w-32 sm:w-44">
+            <div className="w-full h-1.5 rounded-full bg-neutral-200 overflow-hidden">
+              <div
+                className="h-full transition-all duration-300"
+                style={{
+                  width: `${progressPercent}%`,
+                  backgroundColor: form.theme.primaryColor,
+                }}
+              />
+            </div>
+            <span className="tabular-nums font-mono text-[11px] shrink-0">{progressPercent}%</span>
           </div>
-          <span className="tabular-nums font-mono text-[11px] shrink-0">{progressPercent}%</span>
-        </div>
+        )}
       </div>
 
       {/* Main Question Body */}

@@ -262,6 +262,24 @@ export function setDefaultTheme(theme: import('../types/form').FormTheme): void 
   }
 }
 
+export function applyThemeToOtherForm(
+  targetFormId: string,
+  theme: import('../types/form').FormTheme
+): FormSchema | null {
+  const forms = getStoredForms();
+  const idx = forms.findIndex((f) => f.id === targetFormId);
+  if (idx === -1) return null;
+
+  const updated: FormSchema = {
+    ...forms[idx],
+    theme: JSON.parse(JSON.stringify(theme)),
+    updatedAt: new Date().toISOString(),
+  };
+  forms[idx] = updated;
+  saveForms(forms);
+  return updated;
+}
+
 // Multi-Step Synchronization Helper
 export function ensureFormSteps(form: FormSchema): import('../types/form').FormStep[] {
   if (form.steps && form.steps.length > 0) {

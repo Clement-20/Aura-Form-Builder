@@ -3,6 +3,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { migrateLegacyFormToDocument } from './src/studio/document/migration';
+import { validateAndSanitizeSubmission } from './src/studio/engines/submission-validator';
 
 dotenv.config();
 
@@ -404,6 +406,73 @@ function generateProceduralForm(prompt: string, preferredLayout: string = 'conve
     logicRules: [],
   };
 }
+
+// API: Server-side conditional logic validation & answer sanitization
+app.post('/api/submissions/validate', (req: Request, res: Response) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ valid: false, error: 'Request body must be a JSON object.' });
+      return;
+    }
+
+    const { form, answers, endedEarly, endedOnPageId } = body as {
+      form?: unknown;
+      answers?: unknown;
+      endedEarly?: unknown;
+      endedOnPageId?: unknown;
+    };
+
+    if (!form || typeof form !== 'object' || Array.isArray(form)) {
+      res.status(400).json({ valid: false, error: 'A valid form definition is required.' });
+      return;
+    }
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
+      res.status(400).json({ valid: false, error: 'Answers must be a key-value object.' });
+      return;
+    }
+
+    const doc = migrateLegacyFormToDocument(form as any);
+    const result = validateAndSanitizeSubmission(doc, answers as Record<string, unknown>, {
+      endedEarly: typeof endedEarly === 'boolean' ? endedEarly : undefined,
+      endedOnPageId: typeof endedOnPageId === 'string' ? endedOnPageId : undefined,
+    });
+
+    if (!result.valid) {
+      res.status(422).json({
+        valid: false,
+        errors: result.errors,
+        crossFieldErrors: result.crossFieldErrors,
+      });
+      return;
+    }
+
+    res.json({
+      valid: true,
+      sanitizedAnswers: result.sanitizedAnswers,
+      calculatedValues: result.calculatedValues,
+      resolvedVariables: result.resolvedVariables,
+      formattedVariables: result.formattedVariables,
+      notificationPayload: result.notificationPayload,
+      hiddenFieldPolicy: result.hiddenFieldPolicy,
+      endedEarly: result.endedEarly,
+      endFormTitle: result.endFormTitle,
+      endFormMessage: result.endFormMessage,
+      redirectUrl: result.redirectUrl,
+      score: result.score,
+      maxScore: result.maxScore,
+      scorePercent: result.scorePercent,
+      categoryScores: result.categoryScores,
+      scoring: result.scoring,
+      selectedOutcome: result.selectedOutcome,
+      outcomeId: result.outcomeId,
+      outcomeName: result.outcomeName,
+    });
+  } catch (err) {
+    console.error('[Submission Validation Error]', err);
+    res.status(400).json({ valid: false, error: 'Unable to validate form submission payload.' });
+  }
+});
 
 // Simulated Webhook ping receiver
 app.post('/api/webhook/test', (req: Request, res: Response) => {

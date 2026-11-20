@@ -1,21 +1,69 @@
 @import "tailwindcss";
 
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-lg: 0.75rem;
+}
+
 @layer base {
   :root {
-    --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-serif: 'Instrument Serif', Georgia, serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --bg-canvas: #F7F6F3;
+    --bg-obsidian: #0B0D0F;
+    --ink-primary: #0B0D0F;
+    --ink-muted: #5C6066;
+    --accent-emerald: #0F766E;
+    --accent-mint: #10B981;
+    --ease-vanguard: cubic-bezier(0.32, 0.72, 0, 1);
+
+    /* shadcn/ui semantic tokens harmonized with Soft Structuralism palette */
+    --background: #FFFFFF;
+    --foreground: #0B0D0F;
+    --primary: #0B0D0F;
+    --primary-foreground: #F7F6F3;
+    --muted: #F7F6F3;
+    --muted-foreground: #5C6066;
+    --destructive: #E11D48;
+    --destructive-foreground: #BE123C;
+    --input: #D6D3CD;
+    --ring: #0F766E;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background-color: var(--bg-canvas);
   }
 
   body {
     font-family: var(--font-sans);
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    overflow-x: hidden;
   }
 
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-display);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
+  }
+
+  .font-serif-editorial {
+    font-family: var(--font-serif);
+    letter-spacing: -0.015em;
   }
 
   .tabular-nums {
@@ -23,7 +71,172 @@
   }
 }
 
-/* Custom scrollbars for the visual builder canvas & sidebar */
+/* Fixed subtle architectural grain overlay (GPU-safe, pointer-events-none, never on scroll containers) */
+.vanguard-grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 45;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Double-Bezel machined architecture utility classes */
+.bezel-outer {
+  padding: 6px;
+  border-radius: 2rem;
+  background: rgba(11, 13, 15, 0.032);
+  box-shadow: inset 0 0 0 1px rgba(11, 13, 15, 0.06);
+}
+
+.bezel-inner {
+  border-radius: calc(2rem - 6px);
+  background: #FFFFFF;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 18px 42px -18px rgba(11, 13, 15, 0.08),
+    0 1px 2px rgba(11, 13, 15, 0.04);
+}
+
+.bezel-outer-dark {
+  padding: 6px;
+  border-radius: 2rem;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+
+.bezel-inner-dark {
+  border-radius: calc(2rem - 6px);
+  background: #13161A;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 24px 48px -20px rgba(0, 0, 0, 0.55);
+}
+
+/* Animated link underline draw */
+.link-underline {
+  position: relative;
+}
+.link-underline::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 100%;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 420ms var(--ease-vanguard);
+}
+.link-underline:hover::after,
+.link-underline[data-active="true"]::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+/* Diagram pulse flow (2.8s loop, GPU-safe stroke-dashoffset & transform) */
+@keyframes signalFlow {
+  0% {
+    stroke-dashoffset: 36;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-signal-flow {
+  stroke-dasharray: 6 12;
+  animation: signalFlow 2.6s linear infinite;
+}
+
+@keyframes auraOrbit {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-aura-orbit {
+  animation: auraOrbit 1.8s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+
+@keyframes auraPulseNode {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 1;
+  }
+}
+
+.animate-aura-node {
+  transform-origin: 18px 14px;
+  animation: auraPulseNode 2.2s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-signal-flow,
+  .animate-aura-orbit,
+  .animate-aura-node {
+    animation: none !important;
+  }
+  .studio-surface,
+  .studio-surface * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* FlexStore Form Studio Design Token Interactive Hooks */
+.studio-input {
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.studio-input::placeholder {
+  color: var(--studio-input-placeholder, rgba(11, 13, 15, 0.45));
+}
+
+.studio-input:focus,
+.studio-input:focus-visible {
+  outline: none;
+  border-color: var(--studio-input-focus, var(--studio-primary, #0F766E)) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--studio-input-focus, var(--studio-primary, #0F766E)) 20%, transparent);
+}
+
+.studio-input[data-error="true"] {
+  border-color: var(--studio-error, #DC2626) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--studio-error, #DC2626) 18%, transparent);
+}
+
+.studio-btn {
+  transition: background-color 160ms ease, transform 120ms ease, box-shadow 160ms ease, border-color 160ms ease, filter 160ms ease;
+}
+
+.studio-btn:hover:not(:disabled) {
+  background-color: var(--studio-btn-hover, var(--studio-btn-bg, var(--studio-primary, #0B0D0F))) !important;
+  filter: var(--studio-btn-hover-filter, brightness(0.94));
+}
+
+.studio-btn:active:not(:disabled) {
+  background-color: var(--studio-btn-active, var(--studio-btn-hover, var(--studio-btn-bg, var(--studio-primary, #0B0D0F)))) !important;
+  transform: scale(0.985);
+}
+
+.studio-btn:focus-visible,
+.studio-choice:focus-visible {
+  outline: 2px solid var(--studio-primary, #0F766E);
+  outline-offset: 2px;
+}
+
+/* Subtle custom scrollbars for visual builder canvas & sidebars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -32,9 +245,9 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(150, 150, 150, 0.25);
+  background: rgba(11, 13, 15, 0.16);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(150, 150, 150, 0.45);
+  background: rgba(11, 13, 15, 0.32);
 }

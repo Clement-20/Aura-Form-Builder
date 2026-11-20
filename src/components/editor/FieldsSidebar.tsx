@@ -1,250 +1,668 @@
-import React, { useState } from 'react';
-import { FormField, FieldType, FormLayoutMode } from '../../types/form';
+import React, { useMemo, useState } from 'react';
 import {
-  Type,
-  AlignLeft,
-  Mail,
-  Phone,
-  Link,
-  CheckSquare,
-  CircleDot,
-  ChevronDown,
-  Star,
-  SlidersHorizontal,
-  Calendar,
-  Hash,
-  Info,
   Plus,
-  Trash2,
-  GripVertical,
-  Layers,
+  Trash,
   ArrowUp,
   ArrowDown,
-} from 'lucide-react';
+  ChatText,
+  ListNumbers,
+  Stack,
+  X,
+  MagnifyingGlass,
+  DotsSixVertical,
+  Copy,
+  PencilSimple,
+  Check,
+  CaretDown,
+  CaretRight,
+  SquaresFour,
+  Files,
+  Eye,
+} from '@phosphor-icons/react';
+import { FormLayoutMode } from '../../types/form';
+import {
+  FormComponentType,
+  FormDocument,
+  FormPage,
+  formComponentRegistry,
+  getAllPageComponents,
+  getPageComponents,
+  RegisteredComponentIcon,
+} from '../../studio';
+import {
+  parseDragPayload,
+  serializeDragPayload,
+  STUDIO_DND_MIME,
+  StudioDragPayload,
+} from './dnd-types';
 
 interface FieldsSidebarProps {
-  fields: FormField[];
-  activeFieldId: string | null;
-  onSelectField: (id: string) => void;
-  onAddField: (type: FieldType) => void;
-  onDeleteField: (id: string) => void;
-  onMoveField: (index: number, direction: 'up' | 'down') => void;
+  document: FormDocument;
+  activePageId: string;
+  activeComponentId: string | null;
+  viewAllPages: boolean;
+  onToggleViewAllPages: () => void;
+  onSelectPage: (pageId: string) => void;
+  onCreatePage: () => void;
+  onDuplicatePage: (pageId: string) => void;
+  onRenamePage: (pageId: string, title: string) => void;
+  onRequestDeletePage: (pageId: string) => void;
+  onReorderPage: (pageId: string, direction: 'left' | 'right') => void;
+  onSelectComponent: (id: string) => void;
+  onInsertComponent: (type: FormComponentType) => void;
+  onRequestDeleteComponent: (id: string) => void;
+  onMoveComponentByOffset: (id: string, direction: 'up' | 'down') => void;
+  onDropPayloadOnPage: (payload: StudioDragPayload, targetPageId: string) => void;
+  activeDrag: StudioDragPayload | null;
+  onDragStartPayload: (payload: StudioDragPayload) => void;
+  onDragEndPayload: () => void;
   layoutMode: FormLayoutMode;
   onChangeLayoutMode: (mode: FormLayoutMode) => void;
+  initialTab?: 'components' | 'pages';
+  onCloseMobile?: () => void;
+  isMobileDrawer?: boolean;
+  isReadOnly?: boolean;
 }
 
-const FIELD_PALETTE: {
-  category: string;
-  items: { type: FieldType; label: string; icon: React.FC<{ className?: string }> }[];
-}[] = [
-  {
-    category: 'Text & Narrative',
-    items: [
-      { type: 'text', label: 'Short Text', icon: Type },
-      { type: 'textarea', label: 'Long Paragraph', icon: AlignLeft },
-      { type: 'statement', label: 'Statement / Note', icon: Info },
-    ],
-  },
-  {
-    category: 'Contact Details',
-    items: [
-      { type: 'email', label: 'Email Address', icon: Mail },
-      { type: 'phone', label: 'Phone Number', icon: Phone },
-      { type: 'url', label: 'Website Link', icon: Link },
-    ],
-  },
-  {
-    category: 'Choices & Selections',
-    items: [
-      { type: 'radio', label: 'Single Choice', icon: CircleDot },
-      { type: 'checkbox', label: 'Multiple Select', icon: CheckSquare },
-      { type: 'select', label: 'Dropdown Menu', icon: ChevronDown },
-    ],
-  },
-  {
-    category: 'Ratings & Feedback',
-    items: [
-      { type: 'rating', label: 'Star Rating (1-5)', icon: Star },
-      { type: 'scale', label: 'Opinion Scale (0-10)', icon: SlidersHorizontal },
-    ],
-  },
-  {
-    category: 'Data & Numbers',
-    items: [
-      { type: 'number', label: 'Numeric Value', icon: Hash },
-      { type: 'date', label: 'Date Picker', icon: Calendar },
-    ],
-  },
-];
-
 export const FieldsSidebar: React.FC<FieldsSidebarProps> = ({
-  fields,
-  activeFieldId,
-  onSelectField,
-  onAddField,
-  onDeleteField,
-  onMoveField,
+  document,
+  activePageId,
+  activeComponentId,
+  viewAllPages,
+  onToggleViewAllPages,
+  onSelectPage,
+  onCreatePage,
+  onDuplicatePage,
+  onRenamePage,
+  onRequestDeletePage,
+  onReorderPage,
+  onSelectComponent,
+  onInsertComponent,
+  onRequestDeleteComponent,
+  onMoveComponentByOffset,
+  onDropPayloadOnPage,
+  activeDrag,
+  onDragStartPayload,
+  onDragEndPayload,
   layoutMode,
   onChangeLayoutMode,
+  initialTab = 'components',
+  onCloseMobile,
+  isMobileDrawer = false,
+  isReadOnly = false,
 }) => {
-  const [showPalette, setShowPalette] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<'components' | 'pages'>(initialTab);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
+  const [renamingPageId, setRenamingPageId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [dragOverPageId, setDragOverPageId] = useState<string | null>(null);
+
+  const categoryGroups = useMemo(
+    () => formComponentRegistry.listByCategory(searchQuery),
+    [searchQuery]
+  );
+
+  const toggleCategory = (categoryId: string) => {
+    setCollapsedCategories((prev) => ({
+      ...prev,
+      [categoryId]: !prev[categoryId],
+    }));
+  };
+
+  const startRename = (page: FormPage) => {
+    if (isReadOnly) return;
+    setRenamingPageId(page.id);
+    setRenameDraft(page.title || `Page ${page.index}`);
+  };
+
+  const commitRename = () => {
+    if (renamingPageId && renameDraft.trim()) {
+      onRenamePage(renamingPageId, renameDraft.trim());
+    }
+    setRenamingPageId(null);
+  };
+
+  const LAYOUT_OPTIONS: {
+    id: FormLayoutMode;
+    label: string;
+    icon: React.FC<{ size?: number; weight?: 'regular' | 'bold' }>;
+  }[] = [
+    { id: 'conversational', label: '1-by-1', icon: ChatText },
+    { id: 'stepped', label: 'Pages', icon: ListNumbers },
+    { id: 'standard', label: '1 Page', icon: Stack },
+  ];
 
   return (
-    <aside className="w-72 lg:w-80 border-r border-neutral-200 bg-white flex flex-col shrink-0 h-[calc(100vh-3.5rem)] overflow-y-auto">
-      {/* Layout Mode Selector Bar */}
-      <div className="p-3 border-b border-neutral-100 bg-neutral-50/50">
-        <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider block mb-1.5">
-          Form Experience Flow
-        </label>
-        <div className="grid grid-cols-3 gap-1 bg-neutral-200/60 p-1 rounded-lg text-xs">
-          <button
-            onClick={() => onChangeLayoutMode('conversational')}
-            className={`py-1 text-center font-medium rounded transition-all ${
-              layoutMode === 'conversational'
-                ? 'bg-white text-neutral-900 shadow-xs'
-                : 'text-neutral-600 hover:text-neutral-900'
-            }`}
-          >
-            One-by-One
-          </button>
-          <button
-            onClick={() => onChangeLayoutMode('stepped')}
-            className={`py-1 text-center font-medium rounded transition-all ${
-              layoutMode === 'stepped'
-                ? 'bg-white text-neutral-900 shadow-xs'
-                : 'text-neutral-600 hover:text-neutral-900'
-            }`}
-          >
-            Stepped
-          </button>
-          <button
-            onClick={() => onChangeLayoutMode('standard')}
-            className={`py-1 text-center font-medium rounded transition-all ${
-              layoutMode === 'standard'
-                ? 'bg-white text-neutral-900 shadow-xs'
-                : 'text-neutral-600 hover:text-neutral-900'
-            }`}
-          >
-            Classic
-          </button>
-        </div>
-      </div>
-
-      {/* Add Question Button */}
-      <div className="p-3 border-b border-neutral-100">
-        <button
-          onClick={() => setShowPalette(!showPalette)}
-          className="w-full py-2 px-3 text-xs font-semibold text-white bg-neutral-900 hover:bg-neutral-800 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-xs"
-        >
-          <Plus className="w-4 h-4" />
-          <span>{showPalette ? 'Close Elements' : 'Add Question'}</span>
-        </button>
-      </div>
-
-      {/* Field Elements Palette (Expandable drawer) */}
-      {showPalette && (
-        <div className="p-3 border-b border-neutral-200 bg-neutral-50/70 space-y-4 text-xs animate-in fade-in duration-200">
-          {FIELD_PALETTE.map((cat, idx) => (
-            <div key={idx} className="space-y-1.5">
-              <span className="text-[10px] font-semibold uppercase text-neutral-400 tracking-wider">
-                {cat.category}
-              </span>
-              <div className="grid grid-cols-1 gap-1">
-                {cat.items.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.type}
-                      onClick={() => {
-                        onAddField(item.type);
-                        setShowPalette(false);
-                      }}
-                      className="w-full text-left p-2 rounded-md hover:bg-white border border-transparent hover:border-neutral-200 text-neutral-700 hover:text-neutral-900 transition-all flex items-center gap-2.5 font-medium group"
-                    >
-                      <Icon className="w-4 h-4 text-neutral-500 group-hover:text-neutral-900" />
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
+    <aside
+      className={
+        isMobileDrawer
+          ? 'w-full bg-white flex flex-col max-h-[84dvh] rounded-t-3xl overflow-hidden'
+          : 'hidden lg:flex w-72 xl:w-[296px] border-r border-black/[0.08] bg-white flex-col shrink-0 h-[calc(100dvh-3.5rem)] overflow-hidden'
+      }
+      aria-label="Components and pages sidebar"
+    >
+      {/* Mobile Drawer Handle & Header */}
+      {isMobileDrawer && (
+        <div className="px-5 pt-3 pb-3 bg-white border-b border-black/[0.07] shrink-0">
+          <div className="w-10 h-1 rounded-full bg-black/15 mx-auto mb-3" />
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-display font-semibold text-base text-[#0B0D0F]">
+                {sidebarTab === 'components' ? 'Component Library' : 'Pages & Outline'}
+              </h3>
+              <p className="text-xs text-[#5C6066]">
+                {sidebarTab === 'components'
+                  ? 'Tap any block to insert it into your form'
+                  : 'Manage pages, reorder sections, or jump to blocks'}
+              </p>
             </div>
-          ))}
+            {onCloseMobile && (
+              <button
+                type="button"
+                onClick={onCloseMobile}
+                aria-label="Close panel"
+                className="w-8 h-8 rounded-lg bg-[#F7F6F3] text-[#0B0D0F] flex items-center justify-center"
+              >
+                <X size={16} weight="bold" />
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Outline of Fields */}
-      <div className="p-3 flex-1 overflow-y-auto space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-neutral-500 mb-2 px-1">
-          <span className="font-semibold uppercase tracking-wider text-[11px]">
-            Questions Outline ({fields.length})
-          </span>
+      {/* Primary Sidebar Tab Switcher: Components vs Pages */}
+      <div className="p-3 border-b border-black/[0.07] bg-[#FAF9F7] shrink-0">
+        <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-black/[0.05]">
+          <button
+            type="button"
+            onClick={() => setSidebarTab('components')}
+            className={`py-2 px-2.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+              sidebarTab === 'components'
+                ? 'bg-white text-[#0B0D0F] shadow-xs'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <SquaresFour size={15} weight={sidebarTab === 'components' ? 'duotone' : 'regular'} />
+            <span>Components</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarTab('pages')}
+            className={`py-2 px-2.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+              sidebarTab === 'pages'
+                ? 'bg-white text-[#0B0D0F] shadow-xs'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <Files size={15} weight={sidebarTab === 'pages' ? 'duotone' : 'regular'} />
+            <span>Pages ({document.pages.length})</span>
+          </button>
         </div>
-
-        {fields.length === 0 ? (
-          <div className="text-center py-8 text-neutral-400 text-xs">
-            No questions yet. Click &quot;Add Question&quot; above to create your first element.
-          </div>
-        ) : (
-          fields.map((field, idx) => {
-            const isSelected = activeFieldId === field.id;
-
-            return (
-              <div
-                key={field.id}
-                onClick={() => onSelectField(field.id)}
-                className={`group p-2.5 rounded-lg border text-xs cursor-pointer transition-all flex items-center justify-between gap-2 ${
-                  isSelected
-                    ? 'border-neutral-900 bg-neutral-900/5 font-semibold text-neutral-900'
-                    : 'border-neutral-200/70 hover:border-neutral-300 bg-white text-neutral-700'
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-neutral-400 font-mono text-[11px] shrink-0">
-                    {idx + 1}.
-                  </span>
-                  <span className="truncate">{field.label || 'Untitled Question'}</span>
-                  {field.required && <span className="text-rose-500">*</span>}
-                </div>
-
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMoveField(idx, 'up');
-                    }}
-                    disabled={idx === 0}
-                    className="p-1 text-neutral-400 hover:text-neutral-900 disabled:opacity-20"
-                    title="Move Up"
-                  >
-                    <ArrowUp className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMoveField(idx, 'down');
-                    }}
-                    disabled={idx === fields.length - 1}
-                    className="p-1 text-neutral-400 hover:text-neutral-900 disabled:opacity-20"
-                    title="Move Down"
-                  >
-                    <ArrowDown className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteField(field.id);
-                    }}
-                    className="p-1 text-neutral-400 hover:text-rose-600"
-                    title="Delete Question"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            );
-          })
-        )}
       </div>
+
+      {/* ====================================================================
+          TAB A: SEARCHABLE & CATEGORIZED COMPONENT LIBRARY
+      ==================================================================== */}
+      {sidebarTab === 'components' && (
+        <>
+          {/* Live Search Input */}
+          <div className="px-3 pt-3 pb-2 bg-white border-b border-black/[0.06] shrink-0">
+            <div className="relative">
+              <MagnifyingGlass
+                size={15}
+                weight="regular"
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5C6066] pointer-events-none"
+              />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search blocks (e.g. email, columns)..."
+                aria-label="Search components"
+                className="w-full pl-9 pr-8 py-2 rounded-lg bg-[#F7F6F3] focus:bg-white border border-black/[0.07] focus:border-[#0F766E] focus:ring-2 focus:ring-[#0F766E]/15 text-xs text-[#0B0D0F] placeholder:text-[#5C6066]/70 focus:outline-none transition-all"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear component search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded-md hover:bg-black/[0.06] text-[#5C6066] flex items-center justify-center"
+                >
+                  <X size={12} weight="bold" />
+                </button>
+              )}
+            </div>
+            {!isMobileDrawer && !isReadOnly && (
+              <p className="mt-1.5 px-0.5 text-[10px] text-[#5C6066]">
+                Drag onto the canvas or click any block to insert.
+              </p>
+            )}
+          </div>
+
+          {/* Categorized Component Tiles */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            {categoryGroups.length === 0 ? (
+              <div className="p-6 rounded-xl bg-[#FAF9F7] border border-black/[0.06] text-center space-y-2">
+                <p className="text-xs font-semibold text-[#0B0D0F]">No matching blocks</p>
+                <p className="text-[11px] text-[#5C6066]">
+                  Try searching for &quot;text&quot;, &quot;choice&quot;, &quot;image&quot;, or &quot;column&quot;.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="text-xs font-semibold text-[#0F766E] hover:underline"
+                >
+                  Reset search
+                </button>
+              </div>
+            ) : (
+              categoryGroups.map((group) => {
+                const isCollapsed = !searchQuery && Boolean(collapsedCategories[group.id]);
+                return (
+                  <div key={group.id} className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleCategory(group.id)}
+                      className="w-full flex items-center justify-between px-1 py-0.5 text-left group"
+                      aria-expanded={!isCollapsed}
+                    >
+                      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] group-hover:text-[#0B0D0F] transition-colors">
+                        {group.label} · {group.components.length}
+                      </span>
+                      <span className="text-[#5C6066]">
+                        {isCollapsed ? (
+                          <CaretRight size={12} weight="bold" />
+                        ) : (
+                          <CaretDown size={12} weight="bold" />
+                        )}
+                      </span>
+                    </button>
+
+                    {!isCollapsed && (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {group.components.map((def) => {
+                          const Icon = def.icon;
+                          const dragPayload: StudioDragPayload = {
+                            kind: 'new',
+                            componentType: def.type,
+                          };
+                          return (
+                            <button
+                              key={def.type}
+                              type="button"
+                              disabled={isReadOnly}
+                              draggable={!isReadOnly}
+                              onDragStart={(e) => {
+                                if (isReadOnly) return;
+                                e.dataTransfer.effectAllowed = 'copy';
+                                e.dataTransfer.setData(
+                                  STUDIO_DND_MIME,
+                                  serializeDragPayload(dragPayload)
+                                );
+                                e.dataTransfer.setData(
+                                  'text/plain',
+                                  serializeDragPayload(dragPayload)
+                                );
+                                onDragStartPayload(dragPayload);
+                              }}
+                              onDragEnd={() => onDragEndPayload()}
+                              onClick={() => {
+                                onInsertComponent(def.type);
+                                if (onCloseMobile) onCloseMobile();
+                              }}
+                              title={`${def.displayName} — ${def.hint}`}
+                              className="group relative text-left p-2.5 rounded-xl bg-white border border-black/[0.08] hover:border-[#0F766E] hover:bg-[#0F766E]/[0.03] transition-all flex flex-col gap-1.5 cursor-grab active:cursor-grabbing active:scale-[0.98] disabled:opacity-45 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                            >
+                              <div className="flex items-center justify-between w-full">
+                                <span className="w-7 h-7 rounded-lg bg-[#F7F6F3] group-hover:bg-[#0F766E] group-hover:text-white text-[#0F766E] flex items-center justify-center shrink-0 transition-colors">
+                                  <Icon size={15} weight="regular" />
+                                </span>
+                                {!isReadOnly && (
+                                  <span className="text-[#5C6066]/40 group-hover:text-[#0F766E] transition-colors flex items-center gap-0.5">
+                                    <DotsSixVertical size={13} weight="bold" />
+                                  </span>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <span className="block text-[11px] font-semibold text-[#0B0D0F] leading-tight truncate">
+                                  {def.shortLabel}
+                                </span>
+                                <span className="block text-[10px] text-[#5C6066] truncate mt-0.5">
+                                  {def.hint}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ====================================================================
+          TAB B: PAGE NAVIGATOR & FORM OUTLINE
+      ==================================================================== */}
+      {sidebarTab === 'pages' && (
+        <>
+          <div className="p-3 border-b border-black/[0.06] bg-white space-y-2.5 shrink-0">
+            <div className="flex items-center gap-1.5">
+              {!isReadOnly && (
+                <button
+                  type="button"
+                  onClick={onCreatePage}
+                  className="flex-1 py-2 px-3 rounded-lg bg-[#0B0D0F] hover:bg-[#191D21] text-[#F7F6F3] text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Plus size={14} weight="bold" />
+                  <span>Add Page</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onToggleViewAllPages}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold border transition-colors flex items-center gap-1.5 ${
+                  viewAllPages
+                    ? 'bg-[#0F766E] text-white border-[#0F766E]'
+                    : 'bg-[#F7F6F3] text-[#0B0D0F] border-black/[0.07] hover:bg-[#EAE7E1]'
+                }`}
+                title="Show all pages stacked on the canvas"
+              >
+                <Eye size={14} weight="regular" />
+                <span>All</span>
+              </button>
+            </div>
+
+            {activeDrag && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-[#0F766E]/10 text-[#0F766E] text-[11px] font-medium">
+                Drop onto any page below to move or insert it there.
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {document.pages.map((page, pageIdx) => {
+              const isActive = !viewAllPages && activePageId === page.id;
+              const allOnPage = getAllPageComponents(document, page.id);
+              const topLevelOnPage = getPageComponents(document, page.id);
+              const isDropHover = dragOverPageId === page.id;
+
+              return (
+                <div
+                  key={page.id}
+                  onDragOver={(e) => {
+                    if (isReadOnly) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect =
+                      activeDrag?.kind === 'existing' ? 'move' : 'copy';
+                    if (dragOverPageId !== page.id) setDragOverPageId(page.id);
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverPageId === page.id) setDragOverPageId(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverPageId(null);
+                    if (isReadOnly) return;
+                    const payload =
+                      activeDrag ||
+                      parseDragPayload(
+                        e.dataTransfer.getData(STUDIO_DND_MIME) ||
+                          e.dataTransfer.getData('text/plain')
+                      );
+                    if (payload) {
+                      onDropPayloadOnPage(payload, page.id);
+                    }
+                  }}
+                  className={`rounded-xl border transition-all ${
+                    isDropHover
+                      ? 'border-[#0F766E] bg-[#0F766E]/10 ring-2 ring-[#0F766E]/30'
+                      : isActive
+                        ? 'border-[#0B0D0F] bg-[#FAF9F7]'
+                        : 'border-black/[0.08] bg-white hover:border-black/20'
+                  }`}
+                >
+                  {/* Page Row Header */}
+                  <div
+                    onClick={() => onSelectPage(page.id)}
+                    className="p-2.5 flex items-center justify-between gap-2 cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span
+                        className={`w-6 h-6 rounded-md font-mono text-[11px] font-semibold flex items-center justify-center shrink-0 ${
+                          isActive
+                            ? 'bg-[#0B0D0F] text-white'
+                            : 'bg-[#F7F6F3] text-[#5C6066]'
+                        }`}
+                      >
+                        {page.index}
+                      </span>
+
+                      {renamingPageId === page.id ? (
+                        <div
+                          className="flex items-center gap-1 flex-1 min-w-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="text"
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onBlur={commitRename}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitRename();
+                              if (e.key === 'Escape') setRenamingPageId(null);
+                            }}
+                            className="w-full px-2 py-1 text-xs font-semibold rounded-md bg-white border border-[#0F766E] focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={commitRename}
+                            className="w-6 h-6 rounded-md bg-[#0F766E] text-white flex items-center justify-center shrink-0"
+                            aria-label="Save page title"
+                          >
+                            <Check size={12} weight="bold" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div
+                          className="min-w-0 flex-1"
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            startRename(page);
+                          }}
+                        >
+                          <span className="block text-xs font-semibold text-[#0B0D0F] truncate">
+                            {page.title || `Page ${page.index}`}
+                          </span>
+                          <span className="block text-[10px] font-mono text-[#5C6066]">
+                            {allOnPage.length} {allOnPage.length === 1 ? 'block' : 'blocks'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {!isReadOnly && renamingPageId !== page.id && (
+                      <div
+                        className="flex items-center gap-0.5 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => startRename(page)}
+                          className="w-6 h-6 rounded-md hover:bg-black/[0.06] text-[#5C6066] hover:text-[#0B0D0F] flex items-center justify-center"
+                          title="Rename page"
+                          aria-label="Rename page"
+                        >
+                          <PencilSimple size={12} weight="regular" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDuplicatePage(page.id)}
+                          className="w-6 h-6 rounded-md hover:bg-black/[0.06] text-[#5C6066] hover:text-[#0B0D0F] flex items-center justify-center"
+                          title="Duplicate page"
+                          aria-label="Duplicate page"
+                        >
+                          <Copy size={12} weight="regular" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={pageIdx === 0}
+                          onClick={() => onReorderPage(page.id, 'left')}
+                          className="w-6 h-6 rounded-md hover:bg-black/[0.06] text-[#5C6066] hover:text-[#0B0D0F] disabled:opacity-25 flex items-center justify-center"
+                          title="Move page up"
+                          aria-label="Move page up"
+                        >
+                          <ArrowUp size={12} weight="regular" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={pageIdx === document.pages.length - 1}
+                          onClick={() => onReorderPage(page.id, 'right')}
+                          className="w-6 h-6 rounded-md hover:bg-black/[0.06] text-[#5C6066] hover:text-[#0B0D0F] disabled:opacity-25 flex items-center justify-center"
+                          title="Move page down"
+                          aria-label="Move page down"
+                        >
+                          <ArrowDown size={12} weight="regular" />
+                        </button>
+                        {document.pages.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => onRequestDeletePage(page.id)}
+                            className="w-6 h-6 rounded-md hover:bg-rose-50 text-[#5C6066] hover:text-rose-600 flex items-center justify-center"
+                            title="Delete page"
+                            aria-label="Delete page"
+                          >
+                            <Trash size={12} weight="regular" />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Active Page Block Outline */}
+                  {isActive && topLevelOnPage.length > 0 && (
+                    <div className="px-2 pb-2 pt-1 border-t border-black/[0.06] space-y-1">
+                      {allOnPage.map((node) => {
+                        const isSelected = activeComponentId === node.id;
+                        const def = formComponentRegistry.get(node.type);
+                        const isNested = Boolean(node.parentId);
+                        return (
+                          <div
+                            key={node.id}
+                            onClick={() => {
+                              onSelectComponent(node.id);
+                              if (onCloseMobile) onCloseMobile();
+                            }}
+                            className={`group px-2 py-1.5 rounded-lg text-[11px] cursor-pointer flex items-center justify-between gap-1.5 transition-colors ${
+                              isNested ? 'ml-4 border-l-2 border-black/[0.08] pl-2.5' : ''
+                            } ${
+                              isSelected
+                                ? 'bg-[#0B0D0F] text-[#F7F6F3] font-medium'
+                                : 'hover:bg-black/[0.04] text-[#0B0D0F]'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <RegisteredComponentIcon
+                                type={node.type}
+                                size={13}
+                                className={
+                                  isSelected
+                                    ? 'text-emerald-400 shrink-0'
+                                    : 'text-[#0F766E] shrink-0'
+                                }
+                              />
+                              <span className="truncate">
+                                {node.content.label || def?.displayName || 'Untitled'}
+                              </span>
+                            </div>
+
+                            {!isReadOnly && (
+                              <div
+                                className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => onMoveComponentByOffset(node.id, 'up')}
+                                  className={`w-5 h-5 rounded flex items-center justify-center ${
+                                    isSelected ? 'hover:bg-white/15' : 'hover:bg-black/[0.08]'
+                                  }`}
+                                  title="Move block up"
+                                  aria-label="Move block up"
+                                >
+                                  <ArrowUp size={11} weight="bold" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onMoveComponentByOffset(node.id, 'down')}
+                                  className={`w-5 h-5 rounded flex items-center justify-center ${
+                                    isSelected ? 'hover:bg-white/15' : 'hover:bg-black/[0.08]'
+                                  }`}
+                                  title="Move block down"
+                                  aria-label="Move block down"
+                                >
+                                  <ArrowDown size={11} weight="bold" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onRequestDeleteComponent(node.id)}
+                                  className={`w-5 h-5 rounded flex items-center justify-center ${
+                                    isSelected
+                                      ? 'hover:bg-rose-500/20 text-rose-300'
+                                      : 'hover:bg-rose-50 text-[#5C6066] hover:text-rose-600'
+                                  }`}
+                                  title="Delete block"
+                                  aria-label="Delete block"
+                                >
+                                  <Trash size={11} weight="bold" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Form Flow Style Footer */}
+          <div className="p-3 border-t border-black/[0.07] bg-[#FAF9F7] shrink-0 space-y-1.5">
+            <span className="font-mono text-[10px] font-semibold text-[#5C6066] uppercase tracking-[0.14em] block">
+              Delivery Style
+            </span>
+            <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-black/[0.05] text-[11px]">
+              {LAYOUT_OPTIONS.map((opt) => {
+                const Icon = opt.icon;
+                const active = layoutMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    disabled={isReadOnly}
+                    onClick={() => onChangeLayoutMode(opt.id)}
+                    className={`py-1.5 px-1.5 rounded-lg font-medium transition-all flex items-center justify-center gap-1 disabled:opacity-50 ${
+                      active
+                        ? 'bg-white text-[#0B0D0F] shadow-xs font-semibold'
+                        : 'text-[#5C6066] hover:text-[#0B0D0F]'
+                    }`}
+                  >
+                    <Icon size={13} weight={active ? 'bold' : 'regular'} />
+                    <span>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
     </aside>
   );
 };

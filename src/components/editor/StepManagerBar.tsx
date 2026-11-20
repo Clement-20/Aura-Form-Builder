@@ -1,17 +1,15 @@
 import React, { useState } from 'react';
-import { FormStep, FormField, FormSchema } from '../../types/form';
 import {
   Plus,
-  ChevronLeft,
-  ChevronRight,
-  Trash2,
-  Edit2,
-  Check,
+  CaretLeft,
+  CaretRight,
+  Trash,
+  PencilSimple,
   X,
-  Layers,
+  Stack,
   Eye,
-  Settings2,
-} from 'lucide-react';
+} from '@phosphor-icons/react';
+import { FormStep, FormField } from '../../types/form';
 
 interface StepManagerBarProps {
   steps: FormStep[];
@@ -56,12 +54,12 @@ export const StepManagerBar: React.FC<StepManagerBarProps> = ({
   };
 
   return (
-    <div className="bg-white border-b border-neutral-200 px-4 sm:px-8 py-2.5 flex items-center justify-between gap-4 text-xs shrink-0 overflow-x-auto">
-      {/* Left: Step Tabs */}
+    <div className="bg-white/90 backdrop-blur-sm border-b border-black/[0.06] px-3 sm:px-6 py-2.5 flex items-center justify-between gap-3 text-xs shrink-0 overflow-x-auto">
+      {/* Left: Page Pills */}
       <div className="flex items-center gap-2 overflow-x-auto py-0.5">
-        <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1.5">
-          <Layers className="w-3.5 h-3.5 text-neutral-600" />
-          <span>Steps</span>
+        <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-[#5C6066] shrink-0 mr-1">
+          <Stack size={14} weight="light" className="text-[#0F766E]" />
+          <span>Pages</span>
         </span>
 
         {steps.map((step, idx) => {
@@ -73,10 +71,10 @@ export const StepManagerBar: React.FC<StepManagerBarProps> = ({
           return (
             <div
               key={step.id || step.stepNumber}
-              className={`group relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all shrink-0 ${
+              className={`group relative flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 min-h-[38px] rounded-full transition-all shrink-0 ${
                 isActive
-                  ? 'border-neutral-900 bg-neutral-900 text-white font-semibold shadow-xs'
-                  : 'border-neutral-200/90 bg-neutral-50 hover:bg-neutral-100 text-neutral-700'
+                  ? 'bg-[#0B0D0F] text-[#F7F6F3] font-semibold'
+                  : 'bg-[#F7F6F3] ring-1 ring-black/[0.06] hover:ring-black/20 text-[#0B0D0F]'
               }`}
             >
               <button
@@ -85,45 +83,55 @@ export const StepManagerBar: React.FC<StepManagerBarProps> = ({
                 className="flex items-center gap-2 text-left"
               >
                 <span
-                  className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-mono font-bold ${
-                    isActive ? 'bg-white text-neutral-900' : 'bg-neutral-200 text-neutral-700'
+                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-bold ${
+                    isActive ? 'bg-white text-[#0B0D0F]' : 'bg-black/[0.07] text-[#0B0D0F]'
                   }`}
                 >
                   {step.stepNumber}
                 </span>
-                <span className="truncate max-w-[130px]">{step.title}</span>
+                <span className="truncate max-w-[110px] sm:max-w-[140px]">{step.title}</span>
                 <span
-                  className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
-                    isActive ? 'bg-white/20 text-white' : 'bg-neutral-200/70 text-neutral-500'
+                  className={`text-[10px] font-mono ${
+                    isActive ? 'text-emerald-300' : 'text-[#5C6066]'
                   }`}
                 >
-                  {stepFieldCount}
+                  ({stepFieldCount})
                 </span>
               </button>
 
-              {/* Step Quick Controls */}
-              <div className="flex items-center gap-0.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {/* Always accessible on active page for touch devices, hover on desktop */}
+              <div
+                className={`flex items-center gap-0.5 ml-1 transition-opacity ${
+                  isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
+              >
                 <button
                   type="button"
                   onClick={() => handleStartEdit(step)}
-                  className={`p-0.5 rounded hover:opacity-100 ${
-                    isActive ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-neutral-200 text-neutral-500'
+                  className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                    isActive
+                      ? 'hover:bg-white/15 text-white/80 hover:text-white'
+                      : 'hover:bg-black/10 text-[#5C6066]'
                   }`}
-                  title="Rename step"
+                  title="Rename page"
+                  aria-label={`Rename ${step.title}`}
                 >
-                  <Edit2 className="w-3 h-3" />
+                  <PencilSimple size={12} weight="light" />
                 </button>
 
                 {!isFirst && (
                   <button
                     type="button"
                     onClick={() => onReorderStep(step.stepNumber, 'left')}
-                    className={`p-0.5 rounded hover:opacity-100 ${
-                      isActive ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-neutral-200 text-neutral-500'
+                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                      isActive
+                        ? 'hover:bg-white/15 text-white/80 hover:text-white'
+                        : 'hover:bg-black/10 text-[#5C6066]'
                     }`}
-                    title="Move Step Left"
+                    title="Move page left"
+                    aria-label="Move page left"
                   >
-                    <ChevronLeft className="w-3 h-3" />
+                    <CaretLeft size={12} weight="light" />
                   </button>
                 )}
 
@@ -131,12 +139,15 @@ export const StepManagerBar: React.FC<StepManagerBarProps> = ({
                   <button
                     type="button"
                     onClick={() => onReorderStep(step.stepNumber, 'right')}
-                    className={`p-0.5 rounded hover:opacity-100 ${
-                      isActive ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-neutral-200 text-neutral-500'
+                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                      isActive
+                        ? 'hover:bg-white/15 text-white/80 hover:text-white'
+                        : 'hover:bg-black/10 text-[#5C6066]'
                     }`}
-                    title="Move Step Right"
+                    title="Move page right"
+                    aria-label="Move page right"
                   >
-                    <ChevronRight className="w-3 h-3" />
+                    <CaretRight size={12} weight="light" />
                   </button>
                 )}
 
@@ -144,12 +155,15 @@ export const StepManagerBar: React.FC<StepManagerBarProps> = ({
                   <button
                     type="button"
                     onClick={() => onDeleteStep(step.stepNumber)}
-                    className={`p-0.5 rounded hover:text-rose-400 ${
-                      isActive ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-neutral-200 text-neutral-500'
+                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                      isActive
+                        ? 'hover:bg-rose-500/20 text-white/75 hover:text-rose-300'
+                        : 'hover:bg-rose-50 text-[#5C6066] hover:text-rose-600'
                     }`}
-                    title="Remove Step (merges fields)"
+                    title="Remove page (keeps questions)"
+                    aria-label="Remove page"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <Trash size={12} weight="light" />
                   </button>
                 )}
               </div>
@@ -157,89 +171,99 @@ export const StepManagerBar: React.FC<StepManagerBarProps> = ({
           );
         })}
 
-        {/* Add Step Button */}
+        {/* Add Page Button */}
         <button
           type="button"
           onClick={onAddStep}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-neutral-300 hover:border-neutral-900 bg-white hover:bg-neutral-50 text-neutral-700 font-semibold transition-colors shrink-0 shadow-2xs"
-          title="Append a new page/step"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 min-h-[38px] rounded-full border border-dashed border-black/20 hover:border-[#0B0D0F] bg-white hover:bg-[#F7F6F3] text-[#0B0D0F] font-semibold transition-colors shrink-0"
+          title="Add a new page to your form"
         >
-          <Plus className="w-3.5 h-3.5 text-neutral-900" />
-          <span>Add Step</span>
+          <Plus size={14} weight="light" className="text-[#0F766E]" />
+          <span>New Page</span>
         </button>
       </div>
 
-      {/* Right: View Mode Toggle */}
-      <div className="flex items-center gap-2 shrink-0">
+      {/* Right: Show All Pages Toggle */}
+      <div className="flex items-center shrink-0">
         <button
           type="button"
           onClick={onToggleViewAll}
-          className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors flex items-center gap-1.5 ${
+          className={`px-3.5 py-2 min-h-[38px] rounded-full text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
             viewAllSteps
-              ? 'bg-neutral-900 text-white border-neutral-900'
-              : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-50'
+              ? 'bg-[#0F766E] text-white'
+              : 'bg-[#F7F6F3] text-[#0B0D0F] ring-1 ring-black/[0.06] hover:ring-black/20'
           }`}
         >
-          <Eye className="w-3.5 h-3.5" />
-          <span>{viewAllSteps ? 'Viewing All Pages' : 'Show All Pages'}</span>
+          <Eye size={14} weight="light" />
+          <span className="hidden sm:inline">{viewAllSteps ? 'All Pages' : 'Show All'}</span>
         </button>
       </div>
 
-      {/* Step Edit Modal */}
+      {/* Page Rename Modal */}
       {editingStep !== null && (
-        <div className="fixed inset-0 z-50 bg-neutral-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-white rounded-xl shadow-xl border border-neutral-200 p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-neutral-100 pb-2.5">
-              <span className="font-bold text-neutral-900 text-sm">
-                Edit Step {editingStep} Settings
-              </span>
-              <button
-                onClick={() => setEditingStep(null)}
-                className="text-neutral-400 hover:text-neutral-700 p-1"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div className="space-y-1">
-                <label className="font-medium text-neutral-700">Step Title</label>
-                <input
-                  type="text"
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  placeholder="e.g. Session Selection"
-                  className="w-full px-3 py-2 border rounded-lg border-neutral-200 focus:outline-none focus:border-neutral-900"
-                />
+        <div
+          className="fixed inset-0 z-50 bg-[#0B0D0F]/55 backdrop-blur-md flex items-center justify-center p-4"
+          onClick={() => setEditingStep(null)}
+        >
+          <div
+            className="w-full max-w-sm p-1.5 rounded-[2rem] bg-white/25 ring-1 ring-white/30 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="rounded-[calc(2rem-6px)] bg-white p-6 space-y-4">
+              <div className="flex items-center justify-between border-b border-black/[0.06] pb-3">
+                <span className="font-display font-semibold text-[#0B0D0F] text-base">
+                  Page {editingStep} Details
+                </span>
+                <button
+                  onClick={() => setEditingStep(null)}
+                  className="w-8 h-8 rounded-full bg-black/[0.04] hover:bg-black/[0.08] text-[#5C6066] flex items-center justify-center"
+                >
+                  <X size={15} weight="light" />
+                </button>
               </div>
 
-              <div className="space-y-1">
-                <label className="font-medium text-neutral-700">Description / Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={editDesc}
-                  onChange={(e) => setEditDesc(e.target.value)}
-                  placeholder="Optional guidance for the respondent..."
-                  className="w-full px-3 py-2 border rounded-lg border-neutral-200 focus:outline-none focus:border-neutral-900"
-                />
-              </div>
-            </div>
+              <div className="space-y-3 text-xs">
+                <div className="space-y-1.5">
+                  <label className="font-semibold text-[#0B0D0F] block">Page Title</label>
+                  <input
+                    type="text"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    placeholder="e.g. Contact Information"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F7F6F3] ring-1 ring-black/[0.08] focus:outline-none focus:ring-2 focus:ring-[#0B0D0F] focus:bg-white"
+                  />
+                </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setEditingStep(null)}
-                className="px-3 py-1.5 rounded-lg text-neutral-600 hover:bg-neutral-100 text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSaveEdit(editingStep)}
-                className="px-3.5 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-semibold hover:bg-neutral-800 transition-colors"
-              >
-                Save Step
-              </button>
+                <div className="space-y-1.5">
+                  <label className="font-semibold text-[#0B0D0F] block">
+                    Short Description (Optional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={editDesc}
+                    onChange={(e) => setEditDesc(e.target.value)}
+                    placeholder="Optional guidance shown at the top of this page..."
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F7F6F3] ring-1 ring-black/[0.08] focus:outline-none focus:ring-2 focus:ring-[#0B0D0F] focus:bg-white resize-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingStep(null)}
+                  className="px-4 py-2 rounded-full text-[#5C6066] hover:bg-[#F7F6F3] text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveEdit(editingStep)}
+                  className="px-5 py-2 rounded-full bg-[#0B0D0F] text-[#F7F6F3] text-xs font-semibold hover:bg-[#191D21] transition-colors"
+                >
+                  Save Page
+                </button>
+              </div>
             </div>
           </div>
         </div>

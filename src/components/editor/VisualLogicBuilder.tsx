@@ -1,673 +1,1613 @@
-import React, { useState } from 'react';
-import {
-  FormSchema,
-  LogicRule,
-  LogicCondition,
-  LogicAction,
-  FormField,
-  FormStep,
-} from '../../types/form';
-import { ensureFormSteps } from '../../lib/storage';
+import React, { useMemo, useState } from 'react';
 import {
   GitBranch,
   Plus,
-  Trash2,
-  ArrowRight,
-  Zap,
-  Eye,
-  EyeOff,
-  FastForward,
-  CheckCircle2,
-  AlertCircle,
-  HelpCircle,
+  Trash,
+  Copy,
+  ArrowUp,
+  ArrowDown,
+  MagnifyingGlass,
+  WarningCircle,
+  Warning,
+  CheckCircle,
   Play,
-  RotateCcw,
-  Sparkles,
-} from 'lucide-react';
+  SlidersHorizontal,
+  Function as FunctionIcon,
+  X,
+} from '@phosphor-icons/react';
+import {
+  AnyLogicRule,
+  FormDocument,
+  FormVariableDefinition,
+  LogicActionConfig,
+  LogicActionType,
+  LogicMessageTone,
+  LogicTrigger,
+  StudioLogicRule,
+  createEmptyAction,
+  createEmptyLogicRule,
+  defaultLogicEngine,
+  duplicateStudioLogicRule,
+  formComponentRegistry,
+  getOrderedComponents,
+  isSafeHttpUrl,
+  logicActionRegistry,
+  normalizeLogicRule,
+  serializeStudioLogicRule,
+  validateFormLogic,
+  validateVariableAssignment,
+} from '../../studio';
+import {
+  LogicConditionGroupEditor,
+  indexConditionTraces,
+} from './LogicConditionGroupEditor';
+import { LogicDebuggerPanel } from './LogicDebuggerPanel';
+import { VariablesManager } from './VariablesManager';
+import { FormulaEditor } from './FormulaEditor';
+import { AnswerPipingPicker } from './AnswerPipingPicker';
 
-interface VisualLogicBuilderProps {
-  form: FormSchema;
-  onUpdateRules: (rules: LogicRule[]) => void;
+function appendPipingToken(current: string, token: string): string {
+  if (!current) return token;
+  return /\s$/.test(current) ? `${current}${token}` : `${current} ${token}`;
 }
 
+interface VisualLogicBuilderProps {
+  document: FormDocument;
+  onUpdateRules: (rules: StudioLogicRule[]) => void;
+  onUpdateVariables: (variables: FormVariableDefinition[]) => void;
+  onRenameVariable?: (variableId: string, nextName: string) => { error?: string };
+  isReadOnly?: boolean;
+}
+
+const TRIGGER_OPTIONS: { value: LogicTrigger; label: string }[] = [
+  { value: 'on_change', label: 'When answers change' },
+  { value: 'on_page_enter', label: 'When page opens' },
+  { value: 'on_page_leave', label: 'When leaving page' },
+  { value: 'on_submit', label: 'Before form submits' },
+  { value: 'always', label: 'Always evaluate' },
+];
+
 export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
-  form,
+  document,
   onUpdateRules,
+  onUpdateVariables,
+  onRenameVariable,
+  isReadOnly = false,
 }) => {
-  const steps = ensureFormSteps(form);
-  const fields = form.fields;
+  // Normalize all rules into structured StudioLogicRule[]
+  const rules: StudioLogicRule[] = useMemo(
+    () =>
+      (document.logic.rules || [])
+        .map((r, idx) => normalizeLogicRule(r as AnyLogicRule, document, idx))
+        .sort((a, b) => a.priority - b.priority),
+    [document]
+  );
 
-  // Rule creation form state
-  const [sourceFieldId, setSourceFieldId] = useState<string>(fields[0]?.id || '');
-  const [condition, setCondition] = useState<LogicCondition>('equals');
-  const [value, setValue] = useState<string>('');
-  const [action, setAction] = useState<LogicAction>('show');
-  const [targetFieldId, setTargetFieldId] = useState<string>(fields[1]?.id || '');
-  const [targetStep, setTargetStep] = useState<number>(2);
+  const [workspaceTab, setWorkspaceTab] = useState<'rules' | 'variables'>('rules');
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(
+    () => rules[0]?.id || null
+  );
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showDebugger, setShowDebugger] = useState(true);
 
-  // Active view: Flowchart vs Rules List vs Simulator
-  const [viewTab, setViewTab] = useState<'rules' | 'diagram' | 'simulator'>('diagram');
+  // Debugger simulated answers
+  const [testAnswers, setTestAnswers] = useState<Record<string, unknown>>({});
 
-  // Simulator state
-  const [simAnswers, setSimAnswers] = useState<Record<string, any>>({});
+  const orderedComponents = useMemo(() => getOrderedComponents(document), [document]);
 
-  const sourceField = fields.find((f) => f.id === sourceFieldId);
+  // Question components usable as condition sources & calculation/skip targets
+  const questionComponents = useMemo(
+    () =>
+      orderedComponents.filter((node) => {
+        const def = formComponentRegistry.get(node.type);
+        return !def || def.isQuestion;
+      }),
+    [orderedComponents]
+  );
 
-  const handleAddRule = () => {
-    if (!sourceFieldId) return;
+  // All non-screen components usable as visibility targets
+  const targetableComponents = useMemo(
+    () =>
+      orderedComponents.filter((node) => {
+        const def = formComponentRegistry.get(node.type);
+        return !def?.specialAction;
+      }),
+    [orderedComponents]
+  );
 
-    // For is_empty or is_not_empty, value is not required
-    const requiresValue = condition !== 'is_empty' && condition !== 'is_not_empty';
-    if (requiresValue && !value.trim()) return;
+  const actionCategories = useMemo(() => logicActionRegistry.listByCategory(), []);
 
-    const newRule: LogicRule = {
-      id: 'rule_' + Math.random().toString(36).substring(2, 9),
-      sourceFieldId,
-      condition,
-      value: requiresValue ? value.trim() : '',
-      action,
-      targetFieldId: action === 'jump_to_step' ? undefined : targetFieldId,
-      targetStep: action === 'jump_to_step' ? targetStep : undefined,
+  // Static validation report
+  const validation = useMemo(() => validateFormLogic(document), [document]);
+
+  // Live creator-only evaluation for Debugger & inline condition trace
+  const evaluation = useMemo(
+    () =>
+      defaultLogicEngine.evaluate(document, {
+        answers: testAnswers,
+        includeDebugTrace: true,
+      }),
+    [document, testAnswers]
+  );
+
+  const resolvedSelectedRule = useMemo(() => {
+    if (selectedRuleId) {
+      const match = rules.find((r) => r.id === selectedRuleId);
+      if (match) return match;
+    }
+    return rules[0] || null;
+  }, [rules, selectedRuleId]);
+
+  const filteredRules = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return rules;
+    return rules.filter((r) => r.name.toLowerCase().includes(q));
+  }, [rules, searchQuery]);
+
+  const selectedRuleTrace = useMemo(() => {
+    if (!resolvedSelectedRule || !showDebugger) return undefined;
+    return evaluation.trace.find((t) => t.ruleId === resolvedSelectedRule.id);
+  }, [resolvedSelectedRule, showDebugger, evaluation.trace]);
+
+  const conditionTraceMap = useMemo(
+    () =>
+      selectedRuleTrace ? indexConditionTraces(selectedRuleTrace.conditionTrace) : undefined,
+    [selectedRuleTrace]
+  );
+
+  const ruleIssues = useMemo(() => {
+    if (!resolvedSelectedRule) return { errors: [], warnings: [] };
+    return {
+      errors: validation.errors.filter((e) => e.ruleId === resolvedSelectedRule.id),
+      warnings: validation.warnings.filter((w) => w.ruleId === resolvedSelectedRule.id),
     };
+  }, [resolvedSelectedRule, validation]);
 
-    onUpdateRules([...form.logicRules, newRule]);
-    setValue('');
+  const commitRules = (nextRules: StudioLogicRule[]) => {
+    if (isReadOnly) return;
+    const serialized = nextRules.map((r, idx) => serializeStudioLogicRule(r, document, idx));
+    onUpdateRules(serialized);
   };
 
-  const handleDeleteRule = (id: string) => {
-    onUpdateRules(form.logicRules.filter((r) => r.id !== id));
+  const handleCreateRule = () => {
+    if (isReadOnly) return;
+    const created = createEmptyLogicRule(document, rules.length);
+    commitRules([...rules, created]);
+    setSelectedRuleId(created.id);
   };
 
-  const getFieldLabel = (id?: string) => {
-    if (!id) return 'Unknown Question';
-    const f = fields.find((field) => field.id === id);
-    return f ? f.label : id;
+  const handleUpdateSelectedRule = (patch: Partial<StudioLogicRule>) => {
+    if (isReadOnly || !resolvedSelectedRule) return;
+    const next = rules.map((r) =>
+      r.id === resolvedSelectedRule.id ? { ...r, ...patch } : r
+    );
+    commitRules(next);
   };
 
-  const getStepTitle = (stepNum?: number) => {
-    if (!stepNum) return 'Step';
-    const s = steps.find((step) => step.stepNumber === stepNum);
-    return s ? `Step ${s.stepNumber}: ${s.title}` : `Step ${stepNum}`;
+  const handleToggleRuleEnabled = (ruleId: string) => {
+    if (isReadOnly) return;
+    commitRules(rules.map((r) => (r.id === ruleId ? { ...r, enabled: !r.enabled } : r)));
   };
 
-  // Pre-built Quick Logic Patterns
-  const handleApplyPresetPattern = (type: 'nps_feedback' | 'vip_skip' | 'opt_in') => {
-    if (type === 'nps_feedback') {
-      const ratingField = fields.find((f) => f.type === 'rating' || f.type === 'scale');
-      const textareaField = fields.find((f) => f.type === 'textarea');
-      if (ratingField && textareaField) {
-        const rule: LogicRule = {
-          id: 'rule_nps_' + Math.random().toString(36).substring(2, 7),
-          sourceFieldId: ratingField.id,
-          condition: 'less_than',
-          value: '4',
-          action: 'show',
-          targetFieldId: textareaField.id,
-        };
-        onUpdateRules([...form.logicRules, rule]);
-      }
-    } else if (type === 'vip_skip') {
-      const radioField = fields.find((f) => f.options && f.options.length > 0);
-      if (radioField && steps.length > 1) {
-        const rule: LogicRule = {
-          id: 'rule_skip_' + Math.random().toString(36).substring(2, 7),
-          sourceFieldId: radioField.id,
-          condition: 'equals',
-          value: radioField.options![0],
-          action: 'jump_to_step',
-          targetStep: 2,
-        };
-        onUpdateRules([...form.logicRules, rule]);
-      }
+  const handleDuplicateRule = (rule: StudioLogicRule) => {
+    if (isReadOnly) return;
+    const copy = duplicateStudioLogicRule(rule, document, rules.length);
+    const idx = rules.findIndex((r) => r.id === rule.id);
+    const next = [...rules];
+    next.splice(idx + 1, 0, copy);
+    // Re-assign clean sequential priorities
+    const reindexed = next.map((r, i) => ({ ...r, priority: (i + 1) * 10 }));
+    commitRules(reindexed);
+    setSelectedRuleId(copy.id);
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    if (isReadOnly) return;
+    const next = rules.filter((r) => r.id !== ruleId);
+    commitRules(next);
+    if (selectedRuleId === ruleId) {
+      setSelectedRuleId(next[0]?.id || null);
     }
   };
 
-  // Evaluate logic for simulator
-  const evaluateSimulator = () => {
-    const triggeredRules: { rule: LogicRule; description: string }[] = [];
-    const hiddenFields = new Set<string>();
-    const shownFields = new Set<string>();
-    let activeStepJump: number | null = null;
-
-    for (const rule of form.logicRules) {
-      const srcVal = simAnswers[rule.sourceFieldId];
-      let matches = false;
-
-      if (rule.condition === 'equals') {
-        matches = String(srcVal ?? '').toLowerCase() === String(rule.value).toLowerCase();
-      } else if (rule.condition === 'not_equals') {
-        matches = String(srcVal ?? '').toLowerCase() !== String(rule.value).toLowerCase();
-      } else if (rule.condition === 'contains') {
-        if (Array.isArray(srcVal)) {
-          matches = srcVal.includes(rule.value);
-        } else {
-          matches = String(srcVal || '').toLowerCase().includes(rule.value.toLowerCase());
-        }
-      } else if (rule.condition === 'not_contains') {
-        if (Array.isArray(srcVal)) {
-          matches = !srcVal.includes(rule.value);
-        } else {
-          matches = !String(srcVal || '').toLowerCase().includes(rule.value.toLowerCase());
-        }
-      } else if (rule.condition === 'greater_than') {
-        matches = Number(srcVal) > Number(rule.value);
-      } else if (rule.condition === 'less_than') {
-        matches = Number(srcVal) < Number(rule.value);
-      } else if (rule.condition === 'is_empty') {
-        matches = srcVal === undefined || srcVal === null || srcVal === '';
-      } else if (rule.condition === 'is_not_empty') {
-        matches = srcVal !== undefined && srcVal !== null && srcVal !== '';
-      }
-
-      if (matches) {
-        if (rule.action === 'show' && rule.targetFieldId) {
-          shownFields.add(rule.targetFieldId);
-          triggeredRules.push({
-            rule,
-            description: `Showing question "${getFieldLabel(rule.targetFieldId)}"`,
-          });
-        } else if (rule.action === 'hide' && rule.targetFieldId) {
-          hiddenFields.add(rule.targetFieldId);
-          triggeredRules.push({
-            rule,
-            description: `Hiding question "${getFieldLabel(rule.targetFieldId)}"`,
-          });
-        } else if (rule.action === 'jump_to_step' && rule.targetStep) {
-          activeStepJump = rule.targetStep;
-          triggeredRules.push({
-            rule,
-            description: `Skipping flow and jumping directly to Step ${rule.targetStep}`,
-          });
-        }
-      }
-    }
-
-    return { triggeredRules, hiddenFields, shownFields, activeStepJump };
+  const handleMoveRulePriority = (ruleId: string, direction: 'up' | 'down') => {
+    if (isReadOnly) return;
+    const idx = rules.findIndex((r) => r.id === ruleId);
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= rules.length) return;
+    const next = [...rules];
+    const tmp = next[idx];
+    next[idx] = next[targetIdx];
+    next[targetIdx] = tmp;
+    const reindexed = next.map((r, i) => ({ ...r, priority: (i + 1) * 10 }));
+    commitRules(reindexed);
   };
 
-  const simResult = evaluateSimulator();
+  // Action mutations for selected rule (shared for THEN and ELSE branches)
+  const handleAddAction = (branch: 'then' | 'else' = 'then') => {
+    if (isReadOnly || !resolvedSelectedRule) return;
+    const defaultType: LogicActionType =
+      branch === 'else' ? 'navigate_to_page' : 'show_component';
+    const created = createEmptyAction(document, defaultType);
+    if (branch === 'else') {
+      handleUpdateSelectedRule({
+        elseActions: [...(resolvedSelectedRule.elseActions || []), created],
+      });
+    } else {
+      handleUpdateSelectedRule({
+        actions: [...resolvedSelectedRule.actions, created],
+      });
+    }
+  };
+
+  const handleUpdateAction = (
+    actionId: string,
+    patch: Partial<LogicActionConfig>,
+    branch: 'then' | 'else' = 'then'
+  ) => {
+    if (isReadOnly || !resolvedSelectedRule) return;
+    if (branch === 'else') {
+      handleUpdateSelectedRule({
+        elseActions: (resolvedSelectedRule.elseActions || []).map((a) =>
+          a.id === actionId ? { ...a, ...patch } : a
+        ),
+      });
+    } else {
+      handleUpdateSelectedRule({
+        actions: resolvedSelectedRule.actions.map((a) =>
+          a.id === actionId ? { ...a, ...patch } : a
+        ),
+      });
+    }
+  };
+
+  const handleChangeActionType = (
+    actionId: string,
+    nextType: LogicActionType,
+    branch: 'then' | 'else' = 'then'
+  ) => {
+    if (isReadOnly || !resolvedSelectedRule) return;
+    const fresh = createEmptyAction(document, nextType);
+    if (branch === 'else') {
+      handleUpdateSelectedRule({
+        elseActions: (resolvedSelectedRule.elseActions || []).map((a) =>
+          a.id === actionId ? { ...fresh, id: actionId } : a
+        ),
+      });
+    } else {
+      handleUpdateSelectedRule({
+        actions: resolvedSelectedRule.actions.map((a) =>
+          a.id === actionId ? { ...fresh, id: actionId } : a
+        ),
+      });
+    }
+  };
+
+  const handleRemoveAction = (actionId: string, branch: 'then' | 'else' = 'then') => {
+    if (isReadOnly || !resolvedSelectedRule) return;
+    if (branch === 'else') {
+      handleUpdateSelectedRule({
+        elseActions: (resolvedSelectedRule.elseActions || []).filter((a) => a.id !== actionId),
+      });
+    } else {
+      handleUpdateSelectedRule({
+        actions: resolvedSelectedRule.actions.filter((a) => a.id !== actionId),
+      });
+    }
+  };
+
+  const activeRuleCount = rules.filter((r) => r.enabled).length;
+  const circularCalcErrors = validation.errors.filter(
+    (e) => e.code === 'CIRCULAR_CALCULATION'
+  );
 
   return (
-    <div className="flex-1 overflow-y-auto h-[calc(100vh-3.5rem)] bg-neutral-50 p-4 sm:p-8 space-y-6">
-      <div className="max-w-6xl mx-auto space-y-6">
-        {/* Top Header & View Tabs */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-bold text-neutral-900 tracking-tight flex items-center gap-2">
-              <GitBranch className="w-5 h-5 text-neutral-800" />
-              <span>Visual Conditional Logic Builder</span>
-            </h2>
-            <p className="text-xs text-neutral-500 mt-0.5">
-              Build branching rules: show/hide questions or skip between steps based on user choices.
-            </p>
-          </div>
-
-          {/* Mode Switcher Tabs */}
-          <div className="flex items-center gap-1 p-1 bg-neutral-200/60 rounded-lg text-xs font-medium">
-            <button
-              onClick={() => setViewTab('diagram')}
-              className={`px-3 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
-                viewTab === 'diagram'
-                  ? 'bg-white text-neutral-900 shadow-xs font-semibold'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
-            >
-              <GitBranch className="w-3.5 h-3.5" />
-              <span>Visual Flow Diagram</span>
-            </button>
-            <button
-              onClick={() => setViewTab('rules')}
-              className={`px-3 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
-                viewTab === 'rules'
-                  ? 'bg-white text-neutral-900 shadow-xs font-semibold'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
-            >
-              <span>Rules Manager ({form.logicRules.length})</span>
-            </button>
-            <button
-              onClick={() => setViewTab('simulator')}
-              className={`px-3 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
-                viewTab === 'simulator'
-                  ? 'bg-white text-neutral-900 shadow-xs font-semibold'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
-            >
-              <Play className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Test Simulator</span>
-            </button>
-          </div>
-        </div>
-
-        {/* RULE CREATOR CARD */}
-        <div className="bg-white p-5 rounded-2xl border border-neutral-200/90 shadow-xs space-y-4 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="font-semibold text-neutral-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Define Logic Branch</span>
+    <div className="flex-1 flex flex-col bg-[#F7F6F3] overflow-hidden min-h-0">
+      {/* TOP SUB-BAR: Logic Rules vs Variables & Calculations + Validation Status + Debugger Toggle */}
+      <div className="px-4 py-2.5 bg-white border-b border-black/[0.08] flex flex-wrap items-center justify-between gap-3 shrink-0">
+        <div
+          className="inline-flex items-center rounded-lg border border-black/[0.08] bg-[#F7F6F3] p-0.5"
+          role="tablist"
+          aria-label="Logic workspace view"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === 'rules'}
+            onClick={() => setWorkspaceTab('rules')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+              workspaceTab === 'rules'
+                ? 'bg-[#0B0D0F] text-[#F7F6F3]'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <GitBranch size={13} weight="duotone" />
+            <span>Logic Rules</span>
+            <span className="font-mono text-[10px] opacity-80 tabular-nums">({rules.length})</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === 'variables'}
+            onClick={() => setWorkspaceTab('variables')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+              workspaceTab === 'variables'
+                ? 'bg-[#0B0D0F] text-[#F7F6F3]'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <FunctionIcon size={13} weight="duotone" />
+            <span>Variables &amp; Calculations</span>
+            <span className="font-mono text-[10px] opacity-80 tabular-nums">
+              ({document.variables.length})
             </span>
-
-            {/* Quick Templates */}
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-neutral-400">Quick Patterns:</span>
-              <button
-                type="button"
-                onClick={() => handleApplyPresetPattern('vip_skip')}
-                className="px-2 py-0.5 rounded border border-neutral-200 hover:bg-neutral-50 text-[11px] text-neutral-700"
-              >
-                + Step Skip Rule
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyPresetPattern('nps_feedback')}
-                className="px-2 py-0.5 rounded border border-neutral-200 hover:bg-neutral-50 text-[11px] text-neutral-700"
-              >
-                + Rating Condition
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            {/* 1. IF Source Question */}
-            <div className="space-y-1">
-              <label className="font-medium text-neutral-600">IF Question</label>
-              <select
-                value={sourceFieldId}
-                onChange={(e) => {
-                  setSourceFieldId(e.target.value);
-                  setValue('');
-                }}
-                className="w-full p-2 border rounded-lg border-neutral-200 bg-white font-medium"
-              >
-                {fields.map((f, i) => (
-                  <option key={f.id} value={f.id}>
-                    {i + 1}. {f.label.slice(0, 32)}...
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* 2. Condition Operator */}
-            <div className="space-y-1">
-              <label className="font-medium text-neutral-600">Condition</label>
-              <select
-                value={condition}
-                onChange={(e) => setCondition(e.target.value as LogicCondition)}
-                className="w-full p-2 border rounded-lg border-neutral-200 bg-white font-medium"
-              >
-                <option value="equals">is equal to</option>
-                <option value="not_equals">is not equal to</option>
-                <option value="contains">contains</option>
-                <option value="not_contains">does not contain</option>
-                <option value="greater_than">is greater than</option>
-                <option value="less_than">is less than</option>
-                <option value="is_empty">is unanswered / empty</option>
-                <option value="is_not_empty">is answered</option>
-              </select>
-            </div>
-
-            {/* 3. Expected Value */}
-            <div className="space-y-1">
-              <label className="font-medium text-neutral-600">Answer Value</label>
-              {condition === 'is_empty' || condition === 'is_not_empty' ? (
-                <div className="p-2 border rounded-lg bg-neutral-50 text-neutral-400 italic">
-                  (Evaluates empty state)
-                </div>
-              ) : sourceField?.options && sourceField.options.length > 0 ? (
-                <select
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  className="w-full p-2 border rounded-lg border-neutral-200 bg-white font-medium"
-                >
-                  <option value="">Select option...</option>
-                  {sourceField.options.map((opt, i) => (
-                    <option key={i} value={opt}>
-                      {opt}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  placeholder="Target answer..."
-                  className="w-full px-3 py-2 border rounded-lg border-neutral-200 focus:outline-none focus:border-neutral-900"
-                />
-              )}
-            </div>
-
-            {/* 4. THEN Action & Target */}
-            <div className="space-y-1">
-              <label className="font-medium text-neutral-600">THEN Action</label>
-              <div className="space-y-1.5">
-                <select
-                  value={action}
-                  onChange={(e) => setAction(e.target.value as LogicAction)}
-                  className="w-full p-2 border rounded-lg border-neutral-200 bg-white font-medium"
-                >
-                  <option value="show">SHOW Question</option>
-                  <option value="hide">HIDE Question</option>
-                  <option value="jump_to_step">SKIP / JUMP to Step</option>
-                </select>
-
-                {action === 'jump_to_step' ? (
-                  <select
-                    value={targetStep}
-                    onChange={(e) => setTargetStep(parseInt(e.target.value, 10))}
-                    className="w-full p-2 border rounded-lg border-neutral-200 bg-indigo-50/50 font-medium"
-                  >
-                    {steps.map((s) => (
-                      <option key={s.stepNumber} value={s.stepNumber}>
-                        Step {s.stepNumber}: {s.title}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <select
-                    value={targetFieldId}
-                    onChange={(e) => setTargetFieldId(e.target.value)}
-                    className="w-full p-2 border rounded-lg border-neutral-200 bg-white font-medium"
-                  >
-                    {fields
-                      .filter((f) => f.id !== sourceFieldId)
-                      .map((f, i) => (
-                        <option key={f.id} value={f.id}>
-                          {f.label.slice(0, 30)}...
-                        </option>
-                      ))}
-                  </select>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-2 flex justify-end">
-            <button
-              onClick={handleAddRule}
-              disabled={condition !== 'is_empty' && condition !== 'is_not_empty' && !value.trim()}
-              className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 text-white font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Create Logic Rule</span>
-            </button>
-          </div>
+          </button>
         </div>
 
-        {/* VIEW 1: VISUAL FLOW DIAGRAM */}
-        {viewTab === 'diagram' && (
-          <div className="bg-white rounded-2xl border border-neutral-200/90 shadow-xs p-6 space-y-6">
-            <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
-              <div>
-                <h3 className="font-bold text-sm text-neutral-900">Interactive Form Logic Graph</h3>
-                <p className="text-[11px] text-neutral-500">
-                  Visual map of questions and their branching conditions
-                </p>
-              </div>
-              <div className="flex items-center gap-4 text-[11px]">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                  <span>Show Target</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                  <span>Hide Target</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
-                  <span>Skip to Step</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Questions Flow Graph Nodes */}
-            <div className="space-y-4">
-              {fields.map((field, idx) => {
-                const outgoingRules = form.logicRules.filter((r) => r.sourceFieldId === field.id);
-                const incomingRules = form.logicRules.filter((r) => r.targetFieldId === field.id);
-
-                return (
-                  <div
-                    key={field.id}
-                    className="p-4 rounded-xl border border-neutral-200 hover:border-neutral-300 bg-neutral-50/40 space-y-3 transition-all"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <span className="w-6 h-6 rounded-md bg-neutral-900 text-white font-mono text-xs font-bold flex items-center justify-center">
-                          {idx + 1}
-                        </span>
-                        <div>
-                          <p className="font-bold text-neutral-900 text-xs">{field.label}</p>
-                          <div className="flex items-center gap-2 text-[10px] text-neutral-400 font-mono mt-0.5">
-                            <span className="capitalize">{field.type}</span>
-                            <span aria-hidden="true">·</span>
-                            <span>Step {field.step || 1}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Rule counts */}
-                      <div className="flex items-center gap-2 text-[10px]">
-                        {incomingRules.length > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 font-medium border border-amber-200">
-                            Controlled by {incomingRules.length} rule(s)
-                          </span>
-                        )}
-                        {outgoingRules.length > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-medium border border-indigo-200">
-                            Triggers {outgoingRules.length} rule(s)
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Outgoing Branch Visual Badges */}
-                    {outgoingRules.length > 0 && (
-                      <div className="pl-8 pt-1 space-y-1.5 border-l-2 border-neutral-200 ml-3">
-                        {outgoingRules.map((rule) => {
-                          const isJump = rule.action === 'jump_to_step';
-                          const isShow = rule.action === 'show';
-
-                          return (
-                            <div
-                              key={rule.id}
-                              className={`p-2.5 rounded-lg border text-xs flex items-center justify-between gap-3 ${
-                                isJump
-                                  ? 'bg-indigo-50/70 border-indigo-200 text-indigo-900'
-                                  : isShow
-                                  ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
-                                  : 'bg-amber-50/70 border-amber-200 text-amber-900'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 flex-wrap">
-                                {isJump ? (
-                                  <FastForward className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                                ) : isShow ? (
-                                  <Eye className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                                ) : (
-                                  <EyeOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                                )}
-
-                                <span>
-                                  IF answer <span className="font-mono font-semibold">{rule.condition}</span> &quot;
-                                  <strong className="font-semibold">{rule.value}</strong>&quot;
-                                </span>
-                                <ArrowRight className="w-3 h-3 opacity-60" />
-                                <span className="font-semibold uppercase tracking-wide text-[10px]">
-                                  {rule.action}:
-                                </span>
-                                <span className="font-bold">
-                                  {isJump
-                                    ? getStepTitle(rule.targetStep)
-                                    : getFieldLabel(rule.targetFieldId)}
-                                </span>
-                              </div>
-
-                              <button
-                                onClick={() => handleDeleteRule(rule.id)}
-                                className="p-1 hover:text-rose-600 rounded text-neutral-400"
-                                title="Remove rule"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* VIEW 2: RULES MANAGER TABLE */}
-        {viewTab === 'rules' && (
-          <div className="bg-white rounded-2xl border border-neutral-200/90 shadow-xs p-6 space-y-4 text-xs">
-            <h3 className="font-bold text-sm text-neutral-900">
-              Active Logic Rules ({form.logicRules.length})
-            </h3>
-
-            {form.logicRules.length === 0 ? (
-              <div className="text-center py-12 text-neutral-400">
-                No logic rules defined yet. Create your first rule using the creator above.
-              </div>
+        <div className="flex items-center gap-3">
+          <div className="hidden sm:flex items-center gap-2 text-xs">
+            {validation.errors.length > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-rose-700 font-medium">
+                <WarningCircle size={15} weight="fill" />
+                <span>
+                  {validation.errors.length} issue
+                  {validation.errors.length === 1 ? '' : 's'} to fix before publishing
+                </span>
+              </span>
+            ) : validation.warnings.length > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-amber-700 font-medium">
+                <Warning size={15} weight="fill" />
+                <span>
+                  {validation.warnings.length} advisory warning
+                  {validation.warnings.length === 1 ? '' : 's'}
+                </span>
+              </span>
             ) : (
-              <div className="divide-y divide-neutral-100">
-                {form.logicRules.map((rule, idx) => (
-                  <div key={rule.id} className="py-3 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <span className="w-5 h-5 rounded bg-neutral-100 text-neutral-600 font-mono text-[10px] flex items-center justify-center font-bold">
-                        {idx + 1}
-                      </span>
-                      <div>
-                        <p className="font-semibold text-neutral-900">
-                          {getFieldLabel(rule.sourceFieldId)}
-                        </p>
-                        <p className="text-neutral-500 text-[11px] mt-0.5">
-                          When value <strong className="text-neutral-700">{rule.condition}</strong> &quot;
-                          {rule.value}&quot; →{' '}
-                          <span className="uppercase font-semibold text-indigo-700">{rule.action}</span>{' '}
-                          {rule.action === 'jump_to_step'
-                            ? getStepTitle(rule.targetStep)
-                            : getFieldLabel(rule.targetFieldId)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleDeleteRule(rule.id)}
-                      className="p-1.5 text-neutral-400 hover:text-rose-600 rounded transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
+              <span className="inline-flex items-center gap-1.5 text-[#0F766E] font-medium">
+                <CheckCircle size={15} weight="fill" />
+                <span>All rules &amp; formulas valid</span>
+              </span>
             )}
           </div>
-        )}
 
-        {/* VIEW 3: LIVE TEST SIMULATOR */}
-        {viewTab === 'simulator' && (
-          <div className="bg-white rounded-2xl border border-neutral-200/90 shadow-xs p-6 space-y-6">
-            <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
-              <div>
-                <h3 className="font-bold text-sm text-neutral-900">Logic Test Simulator</h3>
-                <p className="text-[11px] text-neutral-500">
-                  Select sample responses below to see how rules evaluate in real-time
-                </p>
-              </div>
-              <button
-                onClick={() => setSimAnswers({})}
-                className="px-2.5 py-1 text-xs border border-neutral-200 rounded-md hover:bg-neutral-50 flex items-center gap-1.5 text-neutral-700"
-              >
-                <RotateCcw className="w-3 h-3" />
-                <span>Reset Answers</span>
-              </button>
+          <button
+            type="button"
+            onClick={() => setShowDebugger((v) => !v)}
+            className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              showDebugger
+                ? 'bg-[#0F766E] text-white border-[#0F766E]'
+                : 'bg-white text-[#0B0D0F] border-black/[0.08] hover:bg-[#EAE7E1]'
+            }`}
+          >
+            <Play size={13} weight="fill" />
+            <span>{showDebugger ? 'Hide Debugger' : 'Test & Debug'}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col xl:flex-row overflow-hidden min-h-0">
+      {workspaceTab === 'variables' ? (
+        <VariablesManager
+          document={document}
+          onUpdateVariables={onUpdateVariables}
+          onRenameVariable={onRenameVariable}
+          sampleAnswers={testAnswers}
+          resolvedVariables={evaluation.resolvedVariables}
+          formattedVariables={evaluation.formattedVariables}
+          isReadOnly={isReadOnly}
+        />
+      ) : (
+      <>
+      {/* LEFT SIDEBAR: Overview, Rules List & Quick Variables Link */}
+      <aside className="w-full xl:w-[300px] shrink-0 bg-white border-b xl:border-b-0 xl:border-r border-black/[0.08] flex flex-col overflow-hidden">
+        <div className="p-4 border-b border-black/[0.08] space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-display font-semibold text-[#0B0D0F] flex items-center gap-1.5">
+                <GitBranch size={15} weight="duotone" className="text-[#0F766E]" />
+                <span>Logic Rules</span>
+              </h2>
+              <p className="text-[11px] font-mono text-[#5C6066] mt-0.5 tabular-nums">
+                {rules.length} total · {activeRuleCount} active · {document.variables.length} vars
+              </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-              {/* Simulator Input Column */}
-              <div className="md:col-span-7 space-y-4">
-                <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider block">
-                  Simulate Respondent Answers
-                </span>
+            {!isReadOnly && (
+              <button
+                type="button"
+                onClick={handleCreateRule}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#0B0D0F] hover:bg-[#191D21] text-[#F7F6F3] text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
+              >
+                <Plus size={13} weight="bold" />
+                <span>New Rule</span>
+              </button>
+            )}
+          </div>
 
-                {fields.slice(0, 5).map((f) => (
-                  <div key={f.id} className="p-3.5 rounded-xl border border-neutral-200 space-y-2 text-xs">
-                    <label className="font-semibold text-neutral-800 block">{f.label}</label>
+          <div className="relative">
+            <MagnifyingGlass
+              size={14}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#5C6066] pointer-events-none"
+            />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Filter rules..."
+              className="w-full h-8 pl-8 pr-3 text-xs bg-[#F7F6F3] border border-black/[0.08] rounded-lg text-[#0B0D0F] placeholder:text-[#5C6066] focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#0F766E]"
+            />
+          </div>
+        </div>
 
-                    {f.options && f.options.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {f.options.map((opt, i) => (
-                          <button
-                            key={i}
-                            type="button"
-                            onClick={() => setSimAnswers({ ...simAnswers, [f.id]: opt })}
-                            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
-                              simAnswers[f.id] === opt
-                                ? 'bg-neutral-900 text-white border-neutral-900'
-                                : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-700'
-                            }`}
-                          >
-                            {opt}
-                          </button>
-                        ))}
+        {/* Rule List */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-1.5 max-h-[260px] xl:max-h-none">
+          {filteredRules.length === 0 ? (
+            <div className="p-5 text-center text-xs text-[#5C6066] border border-dashed border-black/[0.12] rounded-xl">
+              {rules.length === 0
+                ? 'No rules yet. Create a rule to control visibility, validation, variables, or page jumps.'
+                : 'No rules match your search.'}
+            </div>
+          ) : (
+            filteredRules.map((rule, idx) => {
+              const isSelected = resolvedSelectedRule?.id === rule.id;
+              const errCount = validation.errors.filter((e) => e.ruleId === rule.id).length;
+              const warnCount = validation.warnings.filter((w) => w.ruleId === rule.id).length;
+              const trace = showDebugger
+                ? evaluation.trace.find((t) => t.ruleId === rule.id)
+                : undefined;
+
+              return (
+                <div
+                  key={rule.id}
+                  onClick={() => setSelectedRuleId(rule.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedRuleId(rule.id);
+                    }
+                  }}
+                  className={`group rounded-xl border p-2.5 cursor-pointer transition-colors ${
+                    isSelected
+                      ? 'bg-[#0F766E]/[0.06] border-[#0F766E]/40'
+                      : 'bg-white border-black/[0.07] hover:bg-[#FAF9F7]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-mono text-[#5C6066] tabular-nums shrink-0">
+                          #{idx + 1}
+                        </span>
+                        <span
+                          className={`text-xs font-semibold truncate ${
+                            rule.enabled ? 'text-[#0B0D0F]' : 'text-[#5C6066] line-through'
+                          }`}
+                        >
+                          {rule.name || 'Untitled Rule'}
+                        </span>
                       </div>
-                    ) : (
-                      <input
-                        type="text"
-                        value={simAnswers[f.id] || ''}
-                        onChange={(e) => setSimAnswers({ ...simAnswers, [f.id]: e.target.value })}
-                        placeholder="Type simulated response..."
-                        className="w-full px-3 py-1.5 border rounded-lg border-neutral-200 text-xs"
-                      />
+                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#5C6066] font-mono tabular-nums">
+                        <span>{rule.conditionGroup.combinator}</span>
+                        <span>·</span>
+                        <span>
+                          {rule.actions.length} action{rule.actions.length === 1 ? '' : 's'}
+                          {rule.elseActions && rule.elseActions.length > 0
+                            ? ` + ${rule.elseActions.length} else`
+                            : ''}
+                        </span>
+                        {errCount > 0 && (
+                          <>
+                            <span>·</span>
+                            <span className="text-rose-600 inline-flex items-center gap-0.5 font-semibold">
+                              <WarningCircle size={12} weight="fill" />
+                              {errCount}
+                            </span>
+                          </>
+                        )}
+                        {errCount === 0 && warnCount > 0 && (
+                          <>
+                            <span>·</span>
+                            <span className="text-amber-600 inline-flex items-center gap-0.5">
+                              <Warning size={12} weight="fill" />
+                              {warnCount}
+                            </span>
+                          </>
+                        )}
+                        {trace && rule.enabled && errCount === 0 && (
+                          <>
+                            <span>·</span>
+                            <span
+                              className={
+                                trace.matched
+                                  ? 'text-[#0F766E] font-semibold'
+                                  : trace.branchTaken === 'else'
+                                  ? 'text-amber-700 font-semibold'
+                                  : 'text-[#5C6066]'
+                              }
+                            >
+                              {trace.matched
+                                ? 'THEN'
+                                : trace.branchTaken === 'else'
+                                ? 'ELSE'
+                                : 'Idle'}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {!isReadOnly && (
+                      <div
+                        className="flex items-center gap-0.5 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleToggleRuleEnabled(rule.id)}
+                          aria-label={rule.enabled ? 'Disable rule' : 'Enable rule'}
+                          title={rule.enabled ? 'Disable rule' : 'Enable rule'}
+                          className={`w-7 h-4 rounded-full transition-colors relative shrink-0 ${
+                            rule.enabled ? 'bg-[#0F766E]' : 'bg-black/20'
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                              rule.enabled ? 'left-3.5' : 'left-0.5'
+                            }`}
+                          />
+                        </button>
+                      </div>
                     )}
                   </div>
-                ))}
-              </div>
 
-              {/* Simulator Output Column */}
-              <div className="md:col-span-5 space-y-4">
-                <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider block">
-                  Real-time Rule Execution Log
-                </span>
-
-                <div className="p-4 rounded-xl border border-neutral-200 bg-neutral-50 space-y-3 text-xs">
-                  {simResult.triggeredRules.length === 0 ? (
-                    <p className="text-neutral-400 italic">
-                      No rules triggered yet with current simulated answers.
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {simResult.triggeredRules.map((t, i) => (
-                        <div
-                          key={i}
-                          className="p-2.5 rounded-lg bg-white border border-neutral-200 text-neutral-800 space-y-1"
+                  {!isReadOnly && isSelected && (
+                    <div
+                      className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => handleMoveRulePriority(rule.id, 'up')}
+                          className="p-1 rounded-md text-[#5C6066] hover:text-[#0B0D0F] hover:bg-black/[0.05] disabled:opacity-25"
+                          title="Increase priority (run earlier)"
+                          aria-label="Move rule up"
                         >
-                          <div className="flex items-center gap-1.5 text-emerald-700 font-semibold text-[11px]">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Rule Active</span>
-                          </div>
-                          <p className="font-medium text-xs">{t.description}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {simResult.activeStepJump && (
-                    <div className="p-3 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-900 font-semibold flex items-center gap-2">
-                      <FastForward className="w-4 h-4 text-indigo-600" />
-                      <span>Next button will skip to Step {simResult.activeStepJump}!</span>
+                          <ArrowUp size={12} weight="bold" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === filteredRules.length - 1}
+                          onClick={() => handleMoveRulePriority(rule.id, 'down')}
+                          className="p-1 rounded-md text-[#5C6066] hover:text-[#0B0D0F] hover:bg-black/[0.05] disabled:opacity-25"
+                          title="Lower priority (run later)"
+                          aria-label="Move rule down"
+                        >
+                          <ArrowDown size={12} weight="bold" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleDuplicateRule(rule)}
+                          className="p-1 rounded-md text-[#5C6066] hover:text-[#0B0D0F] hover:bg-black/[0.05]"
+                          title="Duplicate rule"
+                          aria-label="Duplicate rule"
+                        >
+                          <Copy size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRule(rule.id)}
+                          className="p-1 rounded-md text-[#5C6066] hover:text-rose-600 hover:bg-rose-50"
+                          title="Delete rule"
+                          aria-label="Delete rule"
+                        >
+                          <Trash size={13} />
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Quick Link to Full Variables & Calculations Workspace */}
+        <div className="border-t border-black/[0.08] bg-[#FAF9F7]">
+          <button
+            type="button"
+            onClick={() => setWorkspaceTab('variables')}
+            className="w-full px-4 py-3 flex items-center justify-between text-xs font-semibold text-[#0B0D0F] hover:bg-black/[0.03] transition-colors"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <FunctionIcon size={14} className="text-[#0F766E]" />
+              <span>Variables &amp; Calculations ({document.variables.length})</span>
+            </span>
+            <span className="text-[11px] font-mono text-[#0F766E]">Open →</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* CENTER WORKSPACE: Rule Editor */}
+      <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-w-0">
+        <div className="max-w-3xl mx-auto space-y-5">
+          {/* Global Circular Navigation Error Banner */}
+          {validation.circularPaths.length > 0 && (
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 space-y-1">
+              <div className="font-semibold flex items-center gap-1.5">
+                <WarningCircle size={15} weight="fill" />
+                <span>Circular page navigation detected</span>
               </div>
+              {validation.errors
+                .filter((e) => e.code === 'CIRCULAR_NAVIGATION')
+                .map((err) => (
+                  <p key={err.id}>{err.message}</p>
+                ))}
             </div>
-          </div>
-        )}
+          )}
+
+          {/* Global Circular Calculation Error Banner */}
+          {circularCalcErrors.length > 0 && (
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 space-y-1">
+              <div className="font-semibold flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5">
+                  <WarningCircle size={15} weight="fill" />
+                  <span>Circular calculation dependency detected</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceTab('variables')}
+                  className="underline font-semibold hover:text-rose-950"
+                >
+                  Open Variables
+                </button>
+              </div>
+              {circularCalcErrors.map((err) => (
+                <p key={err.id}>{err.message}</p>
+              ))}
+            </div>
+          )}
+
+          {!resolvedSelectedRule ? (
+            <div className="bg-white rounded-2xl border border-black/[0.08] p-10 text-center space-y-4">
+              <div className="w-12 h-12 rounded-xl bg-[#F7F6F3] border border-black/[0.08] text-[#0F766E] flex items-center justify-center mx-auto">
+                <GitBranch size={24} weight="duotone" />
+              </div>
+              <div className="space-y-1 max-w-md mx-auto">
+                <h3 className="text-base font-display font-semibold text-[#0B0D0F]">
+                  Build dynamic no-code workflows
+                </h3>
+                <p className="text-xs text-[#5C6066] leading-relaxed">
+                  Show or hide questions, lock fields, skip pages, calculate scores, or display
+                  tailored notices based on respondent answers — no code required.
+                </p>
+              </div>
+              {!isReadOnly && (
+                <button
+                  type="button"
+                  onClick={handleCreateRule}
+                  className="inline-flex items-center gap-1.5 h-9 px-4 rounded-xl bg-[#0B0D0F] hover:bg-[#191D21] text-[#F7F6F3] text-xs font-semibold transition-colors whitespace-nowrap"
+                >
+                  <Plus size={14} weight="bold" />
+                  <span>Create First Logic Rule</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {/* Rule Metadata & Execution Configuration Card */}
+              <section className="bg-white rounded-2xl border border-black/[0.08] p-4 sm:p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex-1 min-w-[200px]">
+                    <label className="block text-[10px] font-mono uppercase tracking-[0.12em] text-[#5C6066] mb-1">
+                      Rule Name
+                    </label>
+                    <input
+                      type="text"
+                      disabled={isReadOnly}
+                      value={resolvedSelectedRule.name}
+                      onChange={(e) => handleUpdateSelectedRule({ name: e.target.value })}
+                      placeholder="e.g. Show enterprise follow-up questions"
+                      className="w-full h-9 px-3 text-sm font-display font-semibold text-[#0B0D0F] bg-[#FAF9F7] border border-black/[0.08] rounded-lg focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#0F766E]"
+                    />
+                  </div>
+
+                  {!isReadOnly && (
+                    <div className="flex items-center gap-2 pt-4">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleRuleEnabled(resolvedSelectedRule.id)}
+                        className={`h-9 px-3 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
+                          resolvedSelectedRule.enabled
+                            ? 'bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30'
+                            : 'bg-[#F7F6F3] text-[#5C6066] border-black/[0.08]'
+                        }`}
+                      >
+                        {resolvedSelectedRule.enabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDuplicateRule(resolvedSelectedRule)}
+                        className="h-9 px-2.5 rounded-lg border border-black/[0.08] bg-white hover:bg-[#F7F6F3] text-[#0B0D0F] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap"
+                        title="Duplicate rule"
+                      >
+                        <Copy size={14} />
+                        <span className="hidden sm:inline">Duplicate</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRule(resolvedSelectedRule.id)}
+                        className="h-9 px-2.5 rounded-lg border border-black/[0.08] bg-white hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 text-[#5C6066] text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap"
+                        title="Delete rule"
+                      >
+                        <Trash size={14} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Execution Settings Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-black/[0.06]">
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase tracking-[0.12em] text-[#5C6066] mb-1">
+                      Trigger
+                    </label>
+                    <select
+                      disabled={isReadOnly}
+                      value={resolvedSelectedRule.trigger}
+                      onChange={(e) =>
+                        handleUpdateSelectedRule({
+                          trigger: e.target.value as LogicTrigger,
+                        })
+                      }
+                      className="w-full h-8 px-2.5 text-xs bg-[#FAF9F7] border border-black/[0.08] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                    >
+                      {TRIGGER_OPTIONS.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase tracking-[0.12em] text-[#5C6066] mb-1">
+                      When Conditions Are False
+                    </label>
+                    <select
+                      disabled={isReadOnly}
+                      value={resolvedSelectedRule.execution.elseBehavior}
+                      onChange={(e) =>
+                        handleUpdateSelectedRule({
+                          execution: {
+                            ...resolvedSelectedRule.execution,
+                            elseBehavior: e.target.value as 'revert' | 'none',
+                          },
+                        })
+                      }
+                      className="w-full h-8 px-2.5 text-xs bg-[#FAF9F7] border border-black/[0.08] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                    >
+                      <option value="revert">Revert show/hide defaults</option>
+                      <option value="none">Do nothing</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-end justify-between gap-2">
+                    <div className="w-20">
+                      <label className="block text-[10px] font-mono uppercase tracking-[0.12em] text-[#5C6066] mb-1">
+                        Priority
+                      </label>
+                      <input
+                        type="number"
+                        disabled={isReadOnly}
+                        value={resolvedSelectedRule.priority}
+                        onChange={(e) =>
+                          handleUpdateSelectedRule({
+                            priority: Math.max(1, Number(e.target.value) || 10),
+                          })
+                        }
+                        className="w-full h-8 px-2 text-xs font-mono bg-[#FAF9F7] border border-black/[0.08] rounded-lg text-[#0B0D0F] tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                      />
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[11px] text-[#5C6066] h-8 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        disabled={isReadOnly}
+                        checked={Boolean(resolvedSelectedRule.execution.stopOnMatch)}
+                        onChange={(e) =>
+                          handleUpdateSelectedRule({
+                            execution: {
+                              ...resolvedSelectedRule.execution,
+                              stopOnMatch: e.target.checked,
+                            },
+                          })
+                        }
+                        className="accent-[#0F766E]"
+                      />
+                      <span>Stop lower rules</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Rule-Specific Validation Errors & Warnings */}
+                {(ruleIssues.errors.length > 0 || ruleIssues.warnings.length > 0) && (
+                  <div className="space-y-1.5 pt-2">
+                    {ruleIssues.errors.map((err) => (
+                      <div
+                        key={err.id}
+                        className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2"
+                      >
+                        <WarningCircle size={14} weight="fill" className="shrink-0 mt-0.5" />
+                        <span>{err.message}</span>
+                      </div>
+                    ))}
+                    {ruleIssues.warnings.map((warn) => (
+                      <div
+                        key={warn.id}
+                        className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2"
+                      >
+                        <Warning size={14} weight="fill" className="shrink-0 mt-0.5" />
+                        <span>{warn.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* IF — NESTED CONDITION BUILDER */}
+              <section className="space-y-2.5">
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold uppercase tracking-[0.14em] text-[#0F766E]">
+                      IF
+                    </span>
+                    <span className="text-xs font-medium text-[#5C6066]">
+                      Conditions to evaluate
+                    </span>
+                  </div>
+                </div>
+
+                <LogicConditionGroupEditor
+                  document={document}
+                  group={resolvedSelectedRule.conditionGroup}
+                  onChange={(nextGroup) =>
+                    handleUpdateSelectedRule({ conditionGroup: nextGroup })
+                  }
+                  isReadOnly={isReadOnly}
+                  traceMap={conditionTraceMap}
+                  selectableComponents={questionComponents}
+                />
+              </section>
+
+              {/* THEN & ELSE — MULTI-ACTION BUILDERS (ALL 15 CORE ACTIONS) */}
+              {(() => {
+                const renderActionCard = (
+                  action: LogicActionConfig,
+                  actIdx: number,
+                  branch: 'then' | 'else',
+                  canRemove: boolean
+                ) => {
+                  const actionDef = logicActionRegistry.get(action.type);
+                  const targetVarDef = action.variableName
+                    ? document.variables.find((v) => v.name === action.variableName)
+                    : undefined;
+                  const varAssignValidation =
+                    action.type === 'set_variable' &&
+                    targetVarDef &&
+                    typeof action.value === 'string' &&
+                    action.value.trim() !== '' &&
+                    !/\{\{[^}]+\}\}/.test(action.value)
+                      ? validateVariableAssignment(targetVarDef, action.value)
+                      : null;
+
+                  const isMissingTargetComp =
+                    Boolean(actionDef?.requiresComponentTarget) &&
+                    Boolean(action.targetComponentId) &&
+                    !document.components[action.targetComponentId!];
+
+                  const isMissingTargetPage =
+                    Boolean(actionDef?.requiresPageTarget) &&
+                    Boolean(action.targetPageId) &&
+                    !document.pages.some((p) => p.id === action.targetPageId);
+
+                  const invalidRedirect =
+                    action.type === 'end_form' &&
+                    Boolean(action.redirectUrl?.trim()) &&
+                    !isSafeHttpUrl(action.redirectUrl);
+
+                  return (
+                    <div
+                      key={action.id}
+                      className={`rounded-xl border p-3.5 space-y-3 ${
+                        isMissingTargetComp || isMissingTargetPage || invalidRedirect
+                          ? 'border-rose-300 bg-rose-50/40'
+                          : 'border-black/[0.08] bg-[#FAF9F7]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-mono text-[#5C6066]">
+                          {branch === 'else' ? 'ELSE ' : ''}Action {actIdx + 1} ·{' '}
+                          {actionDef?.category || 'action'}
+                        </span>
+                        {!isReadOnly && (
+                          <button
+                            type="button"
+                            disabled={!canRemove}
+                            onClick={() => handleRemoveAction(action.id, branch)}
+                            className="p-1 rounded-md text-[#5C6066] hover:text-rose-600 hover:bg-rose-50 disabled:opacity-25"
+                            title="Remove action"
+                            aria-label="Remove action"
+                          >
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Action Type Selector */}
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
+                        <div className="md:col-span-5">
+                          <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                            Action Type
+                          </label>
+                          <select
+                            disabled={isReadOnly}
+                            value={action.type}
+                            onChange={(e) =>
+                              handleChangeActionType(
+                                action.id,
+                                e.target.value as LogicActionType,
+                                branch
+                              )
+                            }
+                            className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                          >
+                            {actionCategories.map((cat) => (
+                              <optgroup key={cat.category} label={cat.label}>
+                                {cat.actions.map((def) => (
+                                  <option key={def.type} value={def.type}>
+                                    {def.label}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Component Target Picker */}
+                        {actionDef?.requiresComponentTarget && (
+                          <div className="md:col-span-7">
+                            <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                              Target Question, Section or Block
+                            </label>
+                            <select
+                              disabled={isReadOnly}
+                              value={action.targetComponentId || ''}
+                              onChange={(e) =>
+                                handleUpdateAction(
+                                  action.id,
+                                  { targetComponentId: e.target.value },
+                                  branch
+                                )
+                              }
+                              className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                            >
+                              <option value="">Select target block...</option>
+                              {isMissingTargetComp && (
+                                <option value={action.targetComponentId}>
+                                  Missing block ({action.targetComponentId})
+                                </option>
+                              )}
+                              {(action.type === 'skip_to_question'
+                                ? questionComponents
+                                : targetableComponents
+                              ).map((c, idx) => (
+                                <option key={c.id} value={c.id}>
+                                  {idx + 1}. {c.content.label || c.type}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Single Page Target Picker (navigate_to_page, show_page, hide_page) */}
+                        {actionDef?.requiresPageTarget && (
+                          <div className="md:col-span-7">
+                            <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                              {action.type === 'navigate_to_page'
+                                ? 'Destination Page'
+                                : 'Target Page'}
+                            </label>
+                            <select
+                              disabled={isReadOnly}
+                              value={action.targetPageId || ''}
+                              onChange={(e) =>
+                                handleUpdateAction(
+                                  action.id,
+                                  { targetPageId: e.target.value },
+                                  branch
+                                )
+                              }
+                              className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                            >
+                              <option value="">Select page...</option>
+                              {isMissingTargetPage && (
+                                <option value={action.targetPageId}>
+                                  Deleted page ({action.targetPageId})
+                                </option>
+                              )}
+                              {document.pages.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  Page {p.index}: {p.title || `Page ${p.index}`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Multi-Page Picker (skip_pages) */}
+                        {actionDef?.requiresMultiPageTarget && (
+                          <div className="md:col-span-7">
+                            <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                              Pages to Skip
+                            </label>
+                            {document.pages.length <= 1 ? (
+                              <p className="text-xs text-[#5C6066] bg-white border border-black/[0.08] rounded-lg px-3 py-2">
+                                Add additional pages in the Build tab to skip pages.
+                              </p>
+                            ) : (
+                              <div className="bg-white border border-black/[0.1] rounded-lg p-2 space-y-1.5 max-h-36 overflow-y-auto">
+                                {document.pages.map((p) => {
+                                  const selectedIds = action.targetPageIds || [];
+                                  const isChecked = selectedIds.includes(p.id);
+                                  return (
+                                    <label
+                                      key={p.id}
+                                      className="flex items-center gap-2 text-xs text-[#0B0D0F] cursor-pointer px-1.5 py-0.5 rounded hover:bg-[#FAF9F7]"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        disabled={isReadOnly}
+                                        checked={isChecked}
+                                        onChange={() => {
+                                          const nextIds = isChecked
+                                            ? selectedIds.filter((id) => id !== p.id)
+                                            : [...selectedIds, p.id];
+                                          handleUpdateAction(
+                                            action.id,
+                                            { targetPageIds: nextIds },
+                                            branch
+                                          );
+                                        }}
+                                        className="accent-[#0F766E]"
+                                      />
+                                      <span className="truncate">
+                                        Page {p.index}: {p.title || `Page ${p.index}`}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Set Variable Config */}
+                        {action.type === 'set_variable' && (
+                          <div className="md:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                                Variable
+                              </label>
+                              <select
+                                disabled={isReadOnly}
+                                value={action.variableName || ''}
+                                onChange={(e) =>
+                                  handleUpdateAction(
+                                    action.id,
+                                    { variableName: e.target.value },
+                                    branch
+                                  )
+                                }
+                                className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                              >
+                                <option value="">Select variable...</option>
+                                {document.variables.map((v) => (
+                                  <option key={v.id} value={v.name}>
+                                    {v.name} ({v.valueType})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <div className="flex items-center justify-between gap-1 mb-1">
+                                <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066]">
+                                  Assigned Value
+                                </label>
+                                {targetVarDef?.valueType !== 'boolean' &&
+                                  !(
+                                    targetVarDef?.valueType === 'selection' &&
+                                    targetVarDef.options?.length
+                                  ) && (
+                                    <AnswerPipingPicker
+                                      document={document}
+                                      disabled={isReadOnly}
+                                      onInsertToken={(token) =>
+                                        handleUpdateAction(
+                                          action.id,
+                                          { value: appendPipingToken(action.value ?? '', token) },
+                                          branch
+                                        )
+                                      }
+                                    />
+                                  )}
+                              </div>
+
+                              {targetVarDef?.valueType === 'boolean' ? (
+                                <select
+                                  disabled={isReadOnly}
+                                  value={action.value ?? ''}
+                                  onChange={(e) =>
+                                    handleUpdateAction(action.id, { value: e.target.value }, branch)
+                                  }
+                                  className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                                >
+                                  <option value="">Choose true/false...</option>
+                                  <option value="true">True (Yes)</option>
+                                  <option value="false">False (No)</option>
+                                </select>
+                              ) : targetVarDef?.valueType === 'selection' &&
+                                targetVarDef.options?.length ? (
+                                <select
+                                  disabled={isReadOnly}
+                                  value={action.value ?? ''}
+                                  onChange={(e) =>
+                                    handleUpdateAction(action.id, { value: e.target.value }, branch)
+                                  }
+                                  className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                                >
+                                  <option value="">Choose option...</option>
+                                  {targetVarDef.options.map((opt) => (
+                                    <option key={opt} value={opt}>
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  type={targetVarDef?.valueType === 'date' ? 'date' : 'text'}
+                                  disabled={isReadOnly}
+                                  value={action.value ?? ''}
+                                  onChange={(e) =>
+                                    handleUpdateAction(action.id, { value: e.target.value }, branch)
+                                  }
+                                  placeholder={
+                                    targetVarDef?.valueType === 'number'
+                                      ? 'e.g. 100 or {{qty}}'
+                                      : targetVarDef?.valueType === 'list'
+                                      ? 'Comma-separated items'
+                                      : 'e.g. qualified or {{first_name}}'
+                                  }
+                                  className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                                />
+                              )}
+
+                              {varAssignValidation && !varAssignValidation.valid && (
+                                <p className="mt-1 text-[11px] text-rose-600">
+                                  {varAssignValidation.error}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* End Form Copy & Result Redirect URL */}
+                        {action.type === 'end_form' && (
+                          <div className="md:col-span-7 space-y-2">
+                            <div>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066]">
+                                  Completion Heading
+                                </label>
+                                <AnswerPipingPicker
+                                  document={document}
+                                  disabled={isReadOnly}
+                                  onInsertToken={(token) =>
+                                    handleUpdateAction(
+                                      action.id,
+                                      {
+                                        endFormTitle: appendPipingToken(
+                                          action.endFormTitle ?? '',
+                                          token
+                                        ),
+                                      },
+                                      branch
+                                    )
+                                  }
+                                />
+                              </div>
+                              <input
+                                type="text"
+                                disabled={isReadOnly}
+                                value={action.endFormTitle ?? ''}
+                                onChange={(e) =>
+                                  handleUpdateAction(
+                                    action.id,
+                                    { endFormTitle: e.target.value },
+                                    branch
+                                  )
+                                }
+                                placeholder="Thank you for your time"
+                                className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                              />
+                            </div>
+                            <div>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066]">
+                                  Completion Message
+                                </label>
+                                <AnswerPipingPicker
+                                  document={document}
+                                  disabled={isReadOnly}
+                                  onInsertToken={(token) =>
+                                    handleUpdateAction(
+                                      action.id,
+                                      {
+                                        endFormMessage: appendPipingToken(
+                                          action.endFormMessage ?? '',
+                                          token
+                                        ),
+                                      },
+                                      branch
+                                    )
+                                  }
+                                />
+                              </div>
+                              <input
+                                type="text"
+                                disabled={isReadOnly}
+                                value={action.endFormMessage ?? ''}
+                                onChange={(e) =>
+                                  handleUpdateAction(
+                                    action.id,
+                                    { endFormMessage: e.target.value },
+                                    branch
+                                  )
+                                }
+                                placeholder="Based on your answers, we have everything we need."
+                                className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                                Result / Completion Redirect URL (optional)
+                              </label>
+                              <input
+                                type="url"
+                                disabled={isReadOnly}
+                                value={action.redirectUrl ?? ''}
+                                onChange={(e) =>
+                                  handleUpdateAction(
+                                    action.id,
+                                    { redirectUrl: e.target.value },
+                                    branch
+                                  )
+                                }
+                                placeholder="https://example.com/result"
+                                className="w-full h-9 px-2.5 text-xs font-mono bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                              />
+                              {invalidRedirect && (
+                                <p className="mt-1 text-[11px] text-rose-600">
+                                  Enter a valid http:// or https:// URL.
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Display Message Config */}
+                        {action.type === 'display_message' && (
+                          <div className="md:col-span-7 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                                  Notice Style
+                                </label>
+                                <select
+                                  disabled={isReadOnly}
+                                  value={action.messageTone || 'info'}
+                                  onChange={(e) =>
+                                    handleUpdateAction(
+                                      action.id,
+                                      { messageTone: e.target.value as LogicMessageTone },
+                                      branch
+                                    )
+                                  }
+                                  className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                                >
+                                  <option value="info">Info</option>
+                                  <option value="success">Success</option>
+                                  <option value="warning">Warning</option>
+                                  <option value="error">Alert / Error</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                                  Position
+                                </label>
+                                <select
+                                  disabled={isReadOnly}
+                                  value={action.targetComponentId || ''}
+                                  onChange={(e) =>
+                                    handleUpdateAction(
+                                      action.id,
+                                      { targetComponentId: e.target.value || undefined },
+                                      branch
+                                    )
+                                  }
+                                  className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                                >
+                                  <option value="">Top of current page</option>
+                                  {targetableComponents.map((c, idx) => (
+                                    <option key={c.id} value={c.id}>
+                                      Above Q{idx + 1}. {c.content.label || c.type}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                            <div>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066]">
+                                  Message Text
+                                </label>
+                                <AnswerPipingPicker
+                                  document={document}
+                                  disabled={isReadOnly}
+                                  onInsertToken={(token) =>
+                                    handleUpdateAction(
+                                      action.id,
+                                      { message: appendPipingToken(action.message ?? '', token) },
+                                      branch
+                                    )
+                                  }
+                                />
+                              </div>
+                              <textarea
+                                rows={2}
+                                disabled={isReadOnly}
+                                value={action.message ?? ''}
+                                onChange={(e) =>
+                                  handleUpdateAction(
+                                    action.id,
+                                    { message: e.target.value },
+                                    branch
+                                  )
+                                }
+                                placeholder="Write the message shown to respondents..."
+                                className="w-full p-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E] resize-y"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Calculated Value Config */}
+                        {action.type === 'set_calculated_value' && (
+                          <div className="md:col-span-7 space-y-2">
+                            <div>
+                              <label className="block text-[10px] font-mono uppercase tracking-[0.1em] text-[#5C6066] mb-1">
+                                Store Calculated Result In
+                              </label>
+                              <select
+                                disabled={isReadOnly}
+                                value={
+                                  action.variableName
+                                    ? `var:${action.variableName}`
+                                    : action.targetComponentId
+                                    ? `comp:${action.targetComponentId}`
+                                    : ''
+                                }
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val.startsWith('var:')) {
+                                    handleUpdateAction(
+                                      action.id,
+                                      { variableName: val.slice(4), targetComponentId: undefined },
+                                      branch
+                                    );
+                                  } else if (val.startsWith('comp:')) {
+                                    handleUpdateAction(
+                                      action.id,
+                                      { variableName: undefined, targetComponentId: val.slice(5) },
+                                      branch
+                                    );
+                                  } else {
+                                    handleUpdateAction(
+                                      action.id,
+                                      { variableName: undefined, targetComponentId: undefined },
+                                      branch
+                                    );
+                                  }
+                                }}
+                                className="w-full h-9 px-2.5 text-xs bg-white border border-black/[0.1] rounded-lg text-[#0B0D0F] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                              >
+                                <option value="">Select destination variable or field...</option>
+                                {document.variables.length > 0 && (
+                                  <optgroup label="Form Variables">
+                                    {document.variables.map((v) => (
+                                      <option key={v.id} value={`var:${v.name}`}>
+                                        Variable: {v.name} ({v.valueType})
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                )}
+                                <optgroup label="Form Fields">
+                                  {questionComponents.map((c, idx) => (
+                                    <option key={c.id} value={`comp:${c.id}`}>
+                                      Field Q{idx + 1}: {c.content.label || c.type}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              </select>
+                            </div>
+
+                            <div>
+                              <FormulaEditor
+                                document={document}
+                                value={action.expression ?? ''}
+                                onChange={(nextExpr) =>
+                                  handleUpdateAction(action.id, { expression: nextExpr }, branch)
+                                }
+                                targetVariableType={targetVarDef?.valueType || 'number'}
+                                formatConfig={targetVarDef?.format}
+                                sampleAnswers={testAnswers}
+                                sampleVariables={evaluation.resolvedVariables}
+                                disabled={isReadOnly}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {actionDef?.description && (
+                        <p className="text-[11px] text-[#5C6066] flex items-center gap-1.5">
+                          <SlidersHorizontal size={12} className="shrink-0 opacity-60" />
+                          <span>{actionDef.description}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                };
+
+                const elseActions = resolvedSelectedRule.elseActions || [];
+
+                return (
+                  <>
+                    {/* THEN Branch */}
+                    <section className="space-y-2.5">
+                      <div className="flex items-center justify-between px-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold uppercase tracking-[0.14em] text-[#0B0D0F]">
+                            THEN
+                          </span>
+                          <span className="text-xs font-medium text-[#5C6066]">
+                            Actions to execute when conditions match
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl border border-black/[0.08] p-4 space-y-3">
+                        {resolvedSelectedRule.actions.length === 0 ? (
+                          <div className="p-4 rounded-xl border border-dashed border-black/[0.15] text-center text-xs text-[#5C6066]">
+                            No actions configured. Add an action below.
+                          </div>
+                        ) : (
+                          resolvedSelectedRule.actions.map((action, actIdx) =>
+                            renderActionCard(
+                              action,
+                              actIdx,
+                              'then',
+                              resolvedSelectedRule.actions.length > 1
+                            )
+                          )
+                        )}
+
+                        {!isReadOnly && (
+                          <button
+                            type="button"
+                            onClick={() => handleAddAction('then')}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0B0D0F] bg-[#F7F6F3] hover:bg-[#EAE7E1] border border-black/[0.08] rounded-lg transition-colors whitespace-nowrap shrink-0"
+                          >
+                            <Plus size={13} weight="bold" />
+                            <span>Add Action</span>
+                          </button>
+                        )}
+                      </div>
+                    </section>
+
+                    {/* ELSE Branch (Optional Fallback Branching) */}
+                    <section className="space-y-2.5">
+                      <div className="flex items-center justify-between px-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold uppercase tracking-[0.14em] text-[#5C6066]">
+                            ELSE
+                          </span>
+                          <span className="text-xs font-medium text-[#5C6066]">
+                            Optional fallback actions when conditions do not match
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl border border-black/[0.08] p-4 space-y-3">
+                        {elseActions.length === 0 ? (
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#5C6066]">
+                            <span>
+                              No ELSE branch configured. Add one to route non-matching respondents to
+                              an alternate page, block, or outcome.
+                            </span>
+                            {!isReadOnly && (
+                              <button
+                                type="button"
+                                onClick={() => handleAddAction('else')}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0B0D0F] bg-[#F7F6F3] hover:bg-[#EAE7E1] border border-black/[0.08] rounded-lg transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <Plus size={13} weight="bold" />
+                                <span>Add ELSE Action</span>
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            {elseActions.map((action, actIdx) =>
+                              renderActionCard(action, actIdx, 'else', true)
+                            )}
+                            {!isReadOnly && (
+                              <button
+                                type="button"
+                                onClick={() => handleAddAction('else')}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0B0D0F] bg-[#F7F6F3] hover:bg-[#EAE7E1] border border-black/[0.08] rounded-lg transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <Plus size={13} weight="bold" />
+                                <span>Add ELSE Action</span>
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </section>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      </main>
+      </>
+      )}
+
+      {/* RIGHT PANEL: Live Logic Preview & Debugger (Creator-Only) */}
+      {showDebugger && (
+        <LogicDebuggerPanel
+          document={document}
+          selectableComponents={questionComponents}
+          testAnswers={testAnswers}
+          onChangeTestAnswer={(compId, val) =>
+            setTestAnswers((prev) => ({ ...prev, [compId]: val }))
+          }
+          onResetTestAnswers={() => setTestAnswers({})}
+          evaluation={evaluation}
+          validation={validation}
+          selectedRuleId={resolvedSelectedRule?.id || null}
+          onSelectRule={(ruleId) => {
+            setWorkspaceTab('rules');
+            setSelectedRuleId(ruleId);
+          }}
+        />
+      )}
       </div>
     </div>
   );

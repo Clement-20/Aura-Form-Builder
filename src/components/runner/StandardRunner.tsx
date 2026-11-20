@@ -139,6 +139,7 @@ export const StandardRunner: React.FC<RunnerProps> = ({ form, onSubmit }) => {
   }[form.theme.fontFamily] || 'font-sans';
 
   const roundedClass = {
+    none: 'rounded-none',
     sm: 'rounded-sm',
     md: 'rounded-md',
     lg: 'rounded-xl',
@@ -233,9 +234,34 @@ export const StandardRunner: React.FC<RunnerProps> = ({ form, onSubmit }) => {
           className="max-w-2xl mx-auto p-6 sm:p-10 rounded-2xl border border-neutral-200/80 shadow-xs space-y-6"
           style={{ backgroundColor: form.theme.surfaceColor, color: form.theme.textColor }}
         >
-      <div className="border-b border-neutral-200/80 pb-6">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">{form.title}</h1>
-        {form.description && <p className="text-sm opacity-75 mt-2 leading-relaxed">{form.description}</p>}
+      <div className="border-b border-neutral-200/80 pb-6 space-y-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">{form.title}</h1>
+          {form.description && <p className="text-sm opacity-75 mt-2 leading-relaxed">{form.description}</p>}
+        </div>
+        {form.settings.showProgressBar !== false && visibleFields.length > 0 && (() => {
+          const answeredCount = visibleFields.filter((f) => {
+            const val = answers[f.id];
+            if (val === undefined || val === null || val === '') return false;
+            if (Array.isArray(val) && val.length === 0) return false;
+            return true;
+          }).length;
+          const pct = Math.round((answeredCount / visibleFields.length) * 100);
+          return (
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between text-[11px] font-mono opacity-65">
+                <span>{answeredCount} of {visibleFields.length} answered</span>
+                <span className="tabular-nums">{pct}%</span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-neutral-200/80 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{ width: `${pct}%`, backgroundColor: form.theme.primaryColor }}
+                />
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       <div className="space-y-6">

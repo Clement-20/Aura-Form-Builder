@@ -130,6 +130,100 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           </label>
         </div>
 
+        {/* Form Progress Bar Toggle */}
+        <div className="bg-white p-5 rounded-xl border border-neutral-200/80 shadow-xs space-y-3 text-xs">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <span className="font-semibold text-neutral-800 uppercase tracking-wider text-[11px] block">
+                Form Progress Bar
+              </span>
+              <p className="text-neutral-500 leading-relaxed">
+                Show a live completion progress bar to respondents as they move through your form.
+                Forms with conditional branching automatically switch to a dynamic path indicator.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                aria-label="Toggle form progress bar"
+                checked={settings.showProgressBar !== false}
+                onChange={(e) =>
+                  onUpdateSettings({ ...settings, showProgressBar: e.target.checked })
+                }
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neutral-900" />
+            </label>
+          </div>
+        </div>
+
+        {/* Conditional Logic — Hidden Field Answer Policy */}
+        <div className="bg-white p-5 rounded-xl border border-neutral-200/80 shadow-xs space-y-3 text-xs">
+          <div className="space-y-1">
+            <span className="font-semibold text-neutral-800 uppercase tracking-wider text-[11px] block">
+              Hidden Field Answer Policy
+            </span>
+            <p className="text-neutral-500 leading-relaxed">
+              Define how previously entered answers are handled when conditional logic hides a
+              question, section, or page.
+            </p>
+          </div>
+
+          <div className="space-y-2 pt-1">
+            {(
+              [
+                {
+                  value: 'preserve_on_hide_omit_on_submit',
+                  title: 'Preserve while navigating, omit from submitted response (Recommended)',
+                  desc: 'Respondents keep their typed values if they go back and change an answer, while hidden answers are cleanly excluded from the final submission.',
+                },
+                {
+                  value: 'preserve_always',
+                  title: 'Preserve in submitted response',
+                  desc: 'Keep entered values even when a field is hidden by conditional logic, and include them in the saved response.',
+                },
+                {
+                  value: 'clear_on_hide',
+                  title: 'Clear immediately when hidden',
+                  desc: 'Erase a field’s value the moment a rule hides it.',
+                },
+              ] as const
+            ).map((opt) => {
+              const activePolicy =
+                settings.hiddenFieldPolicy || 'preserve_on_hide_omit_on_submit';
+              const checked = activePolicy === opt.value;
+              return (
+                <label
+                  key={opt.value}
+                  className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${
+                    checked
+                      ? 'border-neutral-900 bg-neutral-50'
+                      : 'border-neutral-200 hover:bg-neutral-50/60'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="hiddenFieldPolicy"
+                    value={opt.value}
+                    checked={checked}
+                    onChange={() =>
+                      onUpdateSettings({
+                        ...settings,
+                        hiddenFieldPolicy: opt.value,
+                      })
+                    }
+                    className="mt-0.5 accent-neutral-900"
+                  />
+                  <div className="space-y-0.5">
+                    <div className="font-semibold text-neutral-900">{opt.title}</div>
+                    <div className="text-neutral-500 leading-relaxed">{opt.desc}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Quiz & Scoring Mode */}
         <div className="bg-white p-5 rounded-xl border border-neutral-200/80 shadow-xs space-y-4 text-xs">
           <div className="flex items-center justify-between">

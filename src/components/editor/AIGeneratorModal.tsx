@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
+import { Sparkle, X, ArrowUpRight } from '@phosphor-icons/react';
 import { FormSchema, FormLayoutMode } from '../../types/form';
-import { Sparkles, X, ArrowRight, Check } from 'lucide-react';
 import { AuraLogo } from '../common/AuraLogo';
 
 interface AIGeneratorModalProps {
@@ -70,10 +70,10 @@ export const AIGeneratorModal: React.FC<AIGeneratorModalProps> = ({
           category: data.form.category || 'survey',
           layoutMode: layoutToUse,
           theme: data.form.theme || {
-            primaryColor: '#18181b',
-            backgroundColor: '#fafafa',
-            surfaceColor: '#ffffff',
-            textColor: '#09090b',
+            primaryColor: '#0B0D0F',
+            backgroundColor: '#F7F6F3',
+            surfaceColor: '#FFFFFF',
+            textColor: '#0B0D0F',
             borderRadius: 'lg',
             fontFamily: 'Plus Jakarta Sans',
             backgroundStyle: 'solid',
@@ -121,139 +121,159 @@ export const AIGeneratorModal: React.FC<AIGeneratorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-neutral-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden text-neutral-800 animate-in fade-in zoom-in-95 duration-200">
-        {/* Header */}
-        <div className="p-5 border-b border-neutral-100 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
-              <Sparkles className="w-4 h-4" />
+    <div
+      className="fixed inset-0 z-50 bg-[#0B0D0F]/60 backdrop-blur-md flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-xl p-1.5 rounded-[2rem] bg-white/25 ring-1 ring-white/30 shadow-[0_32px_80px_-20px_rgba(11,13,15,0.45)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="rounded-[calc(2rem-6px)] bg-[#F7F6F3] text-[#0B0D0F] overflow-hidden">
+          {/* Header */}
+          <div className="px-7 py-5 bg-white border-b border-black/[0.06] flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-2xl bg-[#0B0D0F] text-emerald-400 flex items-center justify-center">
+                <Sparkle size={18} weight="light" />
+              </div>
+              <div>
+                <h3 className="text-base font-display font-semibold text-[#0B0D0F]">
+                  AI Form Architect
+                </h3>
+                <p className="text-[11px] font-mono text-[#5C6066]">
+                  Synthesizes typed FormSchema JSON &amp; validation
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-bold text-neutral-900">AI Form Architect</h3>
-              <p className="text-[11px] text-neutral-500">
-                Powered by Gemini 3.8 Flash & AuraForm procedural schema engine
-              </p>
-            </div>
-          </div>
 
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-neutral-100 text-neutral-400 hover:text-neutral-700"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="p-6 space-y-5">
-          <div className="space-y-2">
-            <label className="block text-xs font-semibold text-neutral-800">
-              Describe the form, survey, or quiz you want to create:
-            </label>
-            <textarea
-              rows={3}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. A 5-question candidate screening quiz for a React developer position with multiple choice options and scoring..."
-              className="w-full p-3 text-xs border rounded-xl border-neutral-200 focus:outline-none focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
-              disabled={loading}
-            />
-          </div>
-
-          {/* Experience Format Selector */}
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-neutral-800">
-              Experience Flow Format:
-            </label>
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              {(
-                [
-                  { id: 'conversational', label: 'Conversational', desc: '1 question at a time' },
-                  { id: 'stepped', label: 'Stepped Wizard', desc: 'Multi-page progression' },
-                  { id: 'standard', label: 'Classic Single Page', desc: 'All fields visible' },
-                ] as const
-              ).map((mode) => (
-                <button
-                  key={mode.id}
-                  type="button"
-                  onClick={() => setLayoutMode(mode.id)}
-                  className={`p-2.5 rounded-lg border text-left transition-all ${
-                    layoutMode === mode.id
-                      ? 'border-neutral-900 bg-neutral-900/5 font-semibold text-neutral-900'
-                      : 'border-neutral-200 hover:border-neutral-300 text-neutral-600'
-                  }`}
-                >
-                  <span className="block text-xs">{mode.label}</span>
-                  <span className="text-[10px] text-neutral-400 mt-0.5 block">{mode.desc}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Inspiration Chips */}
-          <div className="space-y-2 pt-1">
-            <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider block">
-              Quick Inspiration
-            </span>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-              {INSPIRATION_PROMPTS.map((item, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => {
-                    setPrompt(item.prompt);
-                    setLayoutMode(item.layout as FormLayoutMode);
-                    handleGenerate(item.prompt, item.layout as FormLayoutMode);
-                  }}
-                  className="p-2.5 rounded-lg border border-neutral-200/80 hover:border-neutral-400 text-left transition-all bg-neutral-50 hover:bg-white group"
-                >
-                  <p className="font-semibold text-neutral-800 group-hover:text-neutral-900">
-                    {item.title}
-                  </p>
-                  <p className="text-[11px] text-neutral-500 truncate mt-0.5">{item.prompt}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {errorMsg && (
-            <p className="text-xs text-rose-600 bg-rose-50 p-2.5 rounded-lg border border-rose-100">
-              {errorMsg}
-            </p>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="p-4 bg-neutral-50 border-t border-neutral-100 flex items-center justify-between">
-          <span className="text-[11px] text-neutral-400">
-            Generates fields, design tokens & validation
-          </span>
-
-          <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              disabled={loading}
-              className="px-3 py-1.5 text-xs font-semibold text-neutral-600 hover:text-neutral-900"
+              aria-label="Close AI Architect"
+              className="w-9 h-9 rounded-full bg-black/[0.04] hover:bg-black/[0.08] text-[#5C6066] hover:text-[#0B0D0F] flex items-center justify-center transition-colors"
             >
-              Cancel
+              <X size={16} weight="light" />
             </button>
-            <button
-              onClick={() => handleGenerate()}
-              disabled={loading || !prompt.trim()}
-              className="px-4 py-2 text-xs font-semibold text-white bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 rounded-lg transition-colors flex items-center gap-2 shadow-xs"
-            >
-              {loading ? (
-                <>
-                  <AuraLogo className="w-5 h-5" size={20} animate={true} />
-                  <span>Synthesizing Form...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Generate Form</span>
-                </>
-              )}
-            </button>
+          </div>
+
+          {/* Content */}
+          <div className="p-6 sm:p-7 space-y-5">
+            <div className="space-y-2">
+              <label className="block text-xs font-semibold text-[#0B0D0F]">
+                Describe the form, survey, or quiz you want to build
+              </label>
+              <textarea
+                rows={3}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="e.g. A 5-question candidate screening quiz for a React engineer with multiple choice scoring..."
+                className="w-full p-4 text-xs rounded-2xl bg-white ring-1 ring-black/[0.08] focus:outline-none focus:ring-2 focus:ring-[#0B0D0F] transition-shadow resize-none"
+                disabled={loading}
+              />
+            </div>
+
+            {/* Layout Mode */}
+            <div className="space-y-2">
+              <label className="block text-xs font-semibold text-[#0B0D0F]">
+                Renderer Mode
+              </label>
+              <div className="grid grid-cols-3 gap-2.5 text-xs">
+                {(
+                  [
+                    { id: 'conversational', label: 'Conversational', desc: 'One question at a time' },
+                    { id: 'stepped', label: 'Stepped', desc: 'Multi-page sections' },
+                    { id: 'standard', label: 'Classic', desc: 'All fields on one page' },
+                  ] as const
+                ).map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => setLayoutMode(mode.id)}
+                    className={`p-3 rounded-2xl text-left transition-all duration-300 ${
+                      layoutMode === mode.id
+                        ? 'bg-[#0B0D0F] text-[#F7F6F3] ring-1 ring-[#0B0D0F]'
+                        : 'bg-white text-[#0B0D0F] ring-1 ring-black/[0.07] hover:ring-black/25'
+                    }`}
+                  >
+                    <span className="block font-semibold text-xs">{mode.label}</span>
+                    <span
+                      className={`text-[10px] mt-0.5 block ${
+                        layoutMode === mode.id ? 'text-[#A2A8B0]' : 'text-[#5C6066]'
+                      }`}
+                    >
+                      {mode.desc}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Inspiration Prompts */}
+            <div className="space-y-2">
+              <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#5C6066] block">
+                Quick Prompts
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                {INSPIRATION_PROMPTS.map((item, idx) => (
+                  <button
+                    key={idx}
+                    disabled={loading}
+                    onClick={() => {
+                      setPrompt(item.prompt);
+                      setLayoutMode(item.layout as FormLayoutMode);
+                      handleGenerate(item.prompt, item.layout as FormLayoutMode);
+                    }}
+                    className="p-3 rounded-2xl bg-white ring-1 ring-black/[0.06] hover:ring-[#0B0D0F] text-left transition-all duration-300 group disabled:opacity-50"
+                  >
+                    <p className="font-semibold text-[#0B0D0F] group-hover:text-[#0F766E] transition-colors">
+                      {item.title}
+                    </p>
+                    <p className="text-[11px] text-[#5C6066] truncate mt-0.5">{item.prompt}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {errorMsg && (
+              <p className="text-xs text-rose-700 bg-rose-50 p-3 rounded-xl ring-1 ring-rose-200">
+                {errorMsg}
+              </p>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-7 py-4 bg-white border-t border-black/[0.06] flex items-center justify-between gap-4">
+            <span className="text-[11px] font-mono text-[#5C6066]">
+              Fields · Tokens · Validation
+            </span>
+
+            <div className="flex items-center gap-2.5">
+              <button
+                onClick={onClose}
+                disabled={loading}
+                className="px-4 py-2 text-xs font-medium text-[#5C6066] hover:text-[#0B0D0F] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleGenerate()}
+                disabled={loading || !prompt.trim()}
+                className="group inline-flex items-center gap-2.5 pl-5 pr-2 py-2 text-xs font-semibold text-[#F7F6F3] bg-[#0B0D0F] hover:bg-[#191D21] disabled:opacity-40 rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98]"
+              >
+                {loading ? (
+                  <>
+                    <AuraLogo className="w-6 h-6" size={24} animate={true} tone="light" />
+                    <span className="pr-3">Synthesizing...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Generate Schema</span>
+                    <span className="w-7 h-7 rounded-full bg-white/[0.14] flex items-center justify-center transition-transform duration-500 group-hover:translate-x-0.5 group-hover:-translate-y-0.5">
+                      <ArrowUpRight size={14} weight="light" />
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>

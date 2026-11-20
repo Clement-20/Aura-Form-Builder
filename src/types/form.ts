@@ -77,12 +77,27 @@ export type AnimationPreset = 'slide-vertical' | 'slide-horizontal' | 'fade-scal
 export type TransitionSpeed = 'snappy' | 'normal' | 'gentle';
 
 export interface FormTheme {
+  // Colours
   primaryColor: string;
   secondaryColor?: string;
+  accentColor?: string;
   backgroundColor: string;
   surfaceColor: string;
   textColor: string;
-  borderRadius: 'sm' | 'md' | 'lg' | 'full';
+  headingColor?: string;
+  inputBackgroundColor?: string;
+  inputBorderColor?: string;
+  inputTextColor?: string;
+  inputPlaceholderColor?: string;
+  buttonBackgroundColor?: string;
+  buttonTextColor?: string;
+  buttonBorderColor?: string;
+  buttonHoverColor?: string;
+  buttonActiveColor?: string;
+  errorColor?: string;
+  successColor?: string;
+
+  // Typography
   fontFamily:
     | 'DM Sans'
     | 'Plus Jakarta Sans'
@@ -92,12 +107,48 @@ export interface FormTheme {
     | 'Inter'
     | 'Bricolage Grotesque';
   fontSizeScale?: 'compact' | 'normal' | 'large';
-  backgroundStyle: 'solid' | 'subtle-grid' | 'gradient' | 'mesh' | 'dots';
-  gradientDirection?: 'to-bottom' | 'to-right' | 'radial';
+  headingSize?: 'sm' | 'md' | 'lg' | 'xl';
+  bodySize?: 'sm' | 'base' | 'lg';
+  fontWeight?: 'normal' | 'medium' | 'semibold' | 'bold';
+  lineHeight?: 'tight' | 'normal' | 'relaxed';
+  letterSpacing?: 'tight' | 'normal' | 'wide';
+  textAlign?: 'left' | 'center' | 'right';
+
+  // Layout
+  containerMaxWidth?: 'sm' | 'md' | 'lg' | 'xl';
+  contentMaxWidth?: 'narrow' | 'standard' | 'wide' | 'full';
+  pageAlignment?: 'left' | 'center' | 'right';
+  spacingScale?: 'compact' | 'comfortable' | 'relaxed';
+  sectionSpacing?: 'sm' | 'md' | 'lg';
+  componentSpacing?: 'sm' | 'md' | 'lg';
+  internalPadding?: 'sm' | 'md' | 'lg' | 'xl';
+  columnGap?: 'sm' | 'md' | 'lg';
+
+  // Background
+  backgroundStyle: 'solid' | 'subtle-grid' | 'gradient' | 'mesh' | 'dots' | 'image';
+  gradientFrom?: string;
+  gradientTo?: string;
+  gradientDirection?: 'to-bottom' | 'to-right' | 'to-bottom-right' | 'radial';
+  backgroundImageUrl?: string;
+  backgroundPosition?: 'center' | 'top' | 'bottom' | 'left' | 'right';
+  backgroundSize?: 'cover' | 'contain' | 'auto';
+  backgroundOverlayColor?: string;
+  backgroundOverlayOpacity?: number; // 0 - 0.85
+
+  // Borders & Effects
+  borderColor?: string;
+  borderWidth?: '0' | '1' | '2';
+  borderRadius: 'none' | 'sm' | 'md' | 'lg' | 'full';
+  cardShadow?: 'none' | 'sm' | 'md' | 'lg';
+  containerStyle?: 'flat' | 'elevated' | 'outlined' | 'soft';
   inputStyle: 'bordered' | 'filled' | 'underlined';
   buttonStyle?: 'solid' | 'soft' | 'outline' | 'minimal';
   buttonRadius?: 'none' | 'sm' | 'md' | 'lg' | 'full';
   buttonShadow?: 'none' | 'subtle' | 'elevated';
+  buttonPadding?: 'sm' | 'md' | 'lg';
+  buttonFullWidth?: boolean;
+
+  // Motion & Completion
   animationPreset?: AnimationPreset;
   transitionSpeed?: TransitionSpeed;
   animationIntro?: 'fade-in' | 'slide-up' | 'zoom-in' | 'none';
@@ -113,8 +164,10 @@ export interface FormTheme {
 export interface CustomThemePreset {
   id: string;
   name: string;
+  description?: string;
   theme: FormTheme;
   isCustom?: boolean;
+  createdAt?: string;
 }
 
 export interface FormWelcomeScreen {
@@ -133,6 +186,11 @@ export interface FormThankYouScreen {
   showScoreSummary?: boolean; // For quiz
 }
 
+export type HiddenFieldPolicy =
+  | 'preserve_on_hide_omit_on_submit'
+  | 'preserve_always'
+  | 'clear_on_hide';
+
 export interface FormSettings {
   isPublished: boolean;
   slug: string;
@@ -142,6 +200,8 @@ export interface FormSettings {
   closedMessage?: string;
   allowMultipleSubmissions: boolean;
   isQuizMode: boolean;
+  showProgressBar?: boolean;
+  hiddenFieldPolicy?: HiddenFieldPolicy;
   webhookUrl?: string;
   notifyOnSubmission: boolean;
   creatorEmail?: string;
@@ -170,10 +230,25 @@ export interface FormSubmission {
   formId: string;
   submittedAt: string;
   answers: Record<string, any>;
+  resolvedVariables?: Record<string, unknown>;
+  formattedVariables?: Record<string, string>;
   durationSeconds: number;
   isComplete: boolean;
   score?: number;
   maxScore?: number;
+  scorePercent?: number;
+  categoryScores?: Record<
+    string,
+    {
+      name: string;
+      score: number;
+      maxScore: number;
+      percent: number;
+      thresholdLabel?: string;
+    }
+  >;
+  outcomeId?: string;
+  outcomeName?: string;
   deviceInfo?: string;
 }
 

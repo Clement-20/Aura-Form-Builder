@@ -1,173 +1,213 @@
 import React from 'react';
-import { Check, ArrowRight } from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
+import { Check, ArrowUpRight } from '@phosphor-icons/react';
 import { PlanTier } from '../../types/form';
 
 interface PricingSectionProps {
   onSelectPlan: (plan: PlanTier) => void;
 }
 
+const VANGUARD_EASE: [number, number, number, number] = [0.32, 0.72, 0, 1];
+
+const TIERS: {
+  id: PlanTier;
+  eyebrow: string;
+  name: string;
+  price: string;
+  cadence: string;
+  summary: string;
+  features: string[];
+  cta: string;
+  featured?: boolean;
+}[] = [
+  {
+    id: 'free',
+    eyebrow: 'Solo Builders',
+    name: 'Starter',
+    price: '$0',
+    cadence: '/ forever',
+    summary: 'Design conversational and stepped forms locally with instant exports.',
+    features: [
+      'Up to 3 active forms',
+      '100 monthly responses',
+      'Conversational, stepped & classic runners',
+      'Standard theme presets & motion controls',
+    ],
+    cta: 'Start Free',
+  },
+  {
+    id: 'pro',
+    eyebrow: 'Product Teams',
+    name: 'Pro Studio',
+    price: '$29',
+    cadence: '/ month',
+    summary: 'Full schema synthesis, branching logic, unlimited forms, and webhook dispatch.',
+    features: [
+      'Unlimited active forms',
+      '5,000 monthly responses',
+      'AI Form Architect schema synthesis',
+      'Visual branching conditional logic',
+      'Webhooks, SVG QR codes & CSV/JSON export',
+      'Custom typography, tokens & video backgrounds',
+    ],
+    cta: 'Choose Pro Studio',
+    featured: true,
+  },
+  {
+    id: 'enterprise',
+    eyebrow: 'High-Volume Scale',
+    name: 'Enterprise',
+    price: '$99',
+    cadence: '/ month',
+    summary: 'Dedicated PostgreSQL sync, custom domains, and workspace governance.',
+    features: [
+      'Unlimited monthly responses',
+      'Direct Supabase / PostgreSQL persistence',
+      'Custom domain routing & embeds',
+      'Role-based workspace permissions',
+    ],
+    cta: 'Open Enterprise',
+  },
+];
+
 export const PricingSection: React.FC<PricingSectionProps> = ({ onSelectPlan }) => {
+  const prefersReduced = useReducedMotion();
+
   return (
-    <section className="py-20 bg-neutral-50/70 border-t border-neutral-200">
+    <section className="py-28 sm:py-36 bg-[#F7F6F3] text-[#0B0D0F]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-2xl mx-auto mb-16">
-          <h2 className="text-2xl sm:text-4xl font-bold tracking-tight text-neutral-900">
-            Transparent Pricing for High-Intent Teams
-          </h2>
-          <p className="text-sm text-neutral-500 mt-3 leading-relaxed">
-            Choose the workspace scale that aligns with your response volume and custom integration requirements.
+        {/* Section Header */}
+        <motion.div
+          initial={prefersReduced ? false : { opacity: 0, y: 24 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, amount: 0.2 }}
+          transition={{ duration: 0.75, ease: VANGUARD_EASE }}
+          className="max-w-2xl mb-16 sm:mb-20 space-y-4"
+        >
+          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[#0F766E] font-medium">
+            Workspace Plans
           </p>
-        </div>
+          <h2 className="text-3xl sm:text-5xl font-display font-semibold tracking-tight text-[#0B0D0F] leading-[1.08]">
+            Clear scale for every{' '}
+            <span className="font-serif-editorial italic font-normal text-[#0F766E]">
+              response volume.
+            </span>
+          </h2>
+          <p className="text-base text-[#5C6066] leading-relaxed max-w-xl">
+            Every tier runs the exact same shared FormRunner and versioned schema engine. Upgrade only when your workspace needs higher volume or cloud database sync.
+          </p>
+        </motion.div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-          {/* Free Tier */}
-          <div className="bg-white rounded-2xl p-8 border border-neutral-200 shadow-xs flex flex-col justify-between">
-            <div className="space-y-4">
-              <div>
-                <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
-                  For Solo Creators
-                </span>
-                <h3 className="text-xl font-bold text-neutral-900 mt-1">Starter</h3>
-              </div>
+        {/* Double-Bezel 3-Column Tier Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-7 items-stretch">
+          {TIERS.map((tier, idx) => {
+            const isFeatured = Boolean(tier.featured);
 
-              <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold font-mono text-neutral-900 tabular-nums">$0</span>
-                <span className="text-xs text-neutral-500">/ forever</span>
-              </div>
+            return (
+              <motion.div
+                key={tier.id}
+                initial={prefersReduced ? false : { opacity: 0, y: 28 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, amount: 0.15 }}
+                transition={{
+                  duration: 0.75,
+                  delay: prefersReduced ? 0 : idx * 0.08,
+                  ease: VANGUARD_EASE,
+                }}
+                className={`${
+                  isFeatured
+                    ? 'p-1.5 rounded-[2rem] bg-[#0B0D0F]/[0.10] ring-1 ring-[#0B0D0F]/20'
+                    : 'bezel-outer'
+                } flex flex-col transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] hover:-translate-y-1`}
+              >
+                <div
+                  className={`flex-1 flex flex-col justify-between p-8 sm:p-9 ${
+                    isFeatured
+                      ? 'rounded-[calc(2rem-6px)] bg-[#0B0D0F] text-[#F7F6F3] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_28px_60px_-20px_rgba(11,13,15,0.45)]'
+                      : 'bezel-inner text-[#0B0D0F]'
+                  }`}
+                >
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <span
+                        className={`font-mono text-[10px] uppercase tracking-[0.2em] block ${
+                          isFeatured ? 'text-emerald-400' : 'text-[#5C6066]'
+                        }`}
+                      >
+                        {tier.eyebrow}
+                      </span>
+                      <h3 className="text-2xl font-display font-semibold tracking-tight">
+                        {tier.name}
+                      </h3>
+                    </div>
 
-              <p className="text-xs text-neutral-500 leading-relaxed">
-                Test the conversational experience engine and collect initial audience feedback.
-              </p>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-4xl font-display font-semibold font-mono tabular-nums tracking-tight">
+                        {tier.price}
+                      </span>
+                      <span
+                        className={`text-xs ${
+                          isFeatured ? 'text-[#8F969E]' : 'text-[#5C6066]'
+                        }`}
+                      >
+                        {tier.cadence}
+                      </span>
+                    </div>
 
-              <div className="pt-4 border-t border-neutral-100 space-y-2.5 text-xs text-neutral-700">
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Up to 3 active forms</span>
+                    <p
+                      className={`text-sm leading-relaxed ${
+                        isFeatured ? 'text-[#A2A8B0]' : 'text-[#5C6066]'
+                      }`}
+                    >
+                      {tier.summary}
+                    </p>
+
+                    <ul
+                      className={`pt-6 border-t space-y-3 text-sm ${
+                        isFeatured
+                          ? 'border-white/[0.09] text-[#E6E8EB]'
+                          : 'border-black/[0.06] text-[#272A2E]'
+                      }`}
+                    >
+                      {tier.features.map((feat) => (
+                        <li key={feat} className="flex items-start gap-2.5">
+                          <Check
+                            size={16}
+                            weight="light"
+                            className={`mt-0.5 shrink-0 ${
+                              isFeatured ? 'text-emerald-400' : 'text-[#0F766E]'
+                            }`}
+                          />
+                          <span className="leading-snug">{feat}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Button-in-Button CTA */}
+                  <button
+                    onClick={() => onSelectPlan(tier.id)}
+                    className={`group mt-9 w-full inline-flex items-center justify-between pl-6 pr-2 py-2 rounded-full text-xs font-semibold transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
+                      isFeatured
+                        ? 'bg-[#F7F6F3] text-[#0B0D0F] hover:bg-white focus-visible:ring-emerald-400 focus-visible:ring-offset-[#0B0D0F]'
+                        : 'bg-[#0B0D0F]/[0.05] text-[#0B0D0F] hover:bg-[#0B0D0F] hover:text-[#F7F6F3] focus-visible:ring-[#0B0D0F]'
+                    }`}
+                  >
+                    <span>{tier.cta}</span>
+                    <span
+                      className={`w-8 h-8 rounded-full flex items-center justify-center transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:scale-105 ${
+                        isFeatured
+                          ? 'bg-[#0B0D0F]/10 text-[#0B0D0F]'
+                          : 'bg-[#0B0D0F]/[0.07] group-hover:bg-white/15'
+                      }`}
+                    >
+                      <ArrowUpRight size={15} weight="light" />
+                    </span>
+                  </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>100 responses per month</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Conversational & stepped layouts</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Standard theme presets</span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => onSelectPlan('free')}
-              className="mt-8 w-full py-2.5 px-4 rounded-xl border border-neutral-300 hover:border-neutral-900 text-neutral-900 font-semibold text-xs transition-colors"
-            >
-              Start Free
-            </button>
-          </div>
-
-          {/* Pro Tier (Featured) */}
-          <div className="bg-white rounded-2xl p-8 border-2 border-neutral-900 shadow-sm flex flex-col justify-between relative">
-            <div className="space-y-4">
-              <div>
-                <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wider block">
-                  For Product Teams & Agencies
-                </span>
-                <h3 className="text-xl font-bold text-neutral-900 mt-1">Pro Studio</h3>
-              </div>
-
-              <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold font-mono text-neutral-900 tabular-nums">$29</span>
-                <span className="text-xs text-neutral-500">/ month</span>
-              </div>
-
-              <p className="text-xs text-neutral-500 leading-relaxed">
-                Full AI generation, conditional logic rules, unlimited forms, and webhook automations.
-              </p>
-
-              <div className="pt-4 border-t border-neutral-100 space-y-2.5 text-xs text-neutral-800 font-medium">
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>Unlimited active forms</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>5,000 responses per month</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>Gemini 3.8 Flash AI Form Architect</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>Conditional branching logic</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>Real-time webhook events & CSV export</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>Full design token customization</span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => onSelectPlan('pro')}
-              className="mt-8 w-full py-2.5 px-4 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white font-semibold text-xs transition-colors shadow-xs"
-            >
-              Get Pro Studio
-            </button>
-          </div>
-
-          {/* Enterprise Tier */}
-          <div className="bg-white rounded-2xl p-8 border border-neutral-200 shadow-xs flex flex-col justify-between">
-            <div className="space-y-4">
-              <div>
-                <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
-                  For High-Volume Operations
-                </span>
-                <h3 className="text-xl font-bold text-neutral-900 mt-1">Enterprise</h3>
-              </div>
-
-              <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold font-mono text-neutral-900 tabular-nums">$99</span>
-                <span className="text-xs text-neutral-500">/ month</span>
-              </div>
-
-              <p className="text-xs text-neutral-500 leading-relaxed">
-                Dedicated PostgreSQL storage, team collaboration, custom domain routing, and 99.9% uptime SLA.
-              </p>
-
-              <div className="pt-4 border-t border-neutral-100 space-y-2.5 text-xs text-neutral-700">
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Unlimited monthly responses</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Direct Supabase / PostgreSQL sync</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Custom domain publication</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-neutral-900 shrink-0" />
-                  <span>Role-based team seats</span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => onSelectPlan('enterprise')}
-              className="mt-8 w-full py-2.5 px-4 rounded-xl border border-neutral-300 hover:border-neutral-900 text-neutral-900 font-semibold text-xs transition-colors"
-            >
-              Contact Enterprise
-            </button>
-          </div>
+              </motion.div>
+            );
+          })}
         </div>
       </div>
     </section>

@@ -1,18 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Plus,
+  Files,
+  SlidersHorizontal,
+  Eye,
+  UsersThree,
+} from '@phosphor-icons/react';
 import {
   FormSchema,
-  FormField,
-  FieldType,
-  FormTheme,
-  LogicRule,
   FormSettings,
-  FormLayoutMode,
-  FormStep,
 } from '../../types/form';
+import {
+  CollaboratorPresence,
+  FormActivityItem,
+  FormComment,
+  TeamRole,
+  TeamWorkspace,
+} from '../../types/team';
 import { EditorHeader } from './EditorHeader';
 import { FieldsSidebar } from './FieldsSidebar';
 import { EditorCanvas } from './EditorCanvas';
 import { FieldInspector } from './FieldInspector';
+import { ConfirmDialog } from './ConfirmDialog';
 import { ThemeStudio } from './ThemeStudio';
 import { VisualLogicBuilder } from './VisualLogicBuilder';
 import { SettingsTab } from './SettingsTab';
@@ -20,403 +29,726 @@ import { ShareTab } from './ShareTab';
 import { AnalyticsTab } from './AnalyticsTab';
 import { PreviewModal } from '../runner/PreviewModal';
 import { AIGeneratorModal } from './AIGeneratorModal';
-import { saveForm, ensureFormSteps } from '../../lib/storage';
+import { CoAuthorPanel } from '../team/CoAuthorPanel';
+import { saveForm } from '../../lib/storage';
+import { useFirebase } from '../../contexts/FirebaseContext';
+import {
+  addFormComment,
+  clearFormPresence,
+  deleteFormComment,
+  logFormActivity,
+  publishFormPresence,
+  subscribeToFormActivity,
+  subscribeToFormComments,
+  subscribeToFormPresence,
+  subscribeToTeamForm,
+  toggleResolveComment,
+  updateTeamForm,
+} from '../../lib/team-service';
+import {
+  ActivityNote,
+  getAllPageComponents,
+  useFormStudio,
+} from '../../studio';
+import { StudioDragPayload } from './dnd-types';
 
 interface FormEditorProps {
   initialForm: FormSchema;
+  initialTab?: 'build' | 'theme' | 'logic' | 'settings' | 'share' | 'analytics';
+  teamId?: string | null;
+  team?: TeamWorkspace | null;
+  teamRole?: TeamRole | null;
+  onShareLocalFormToTeam?: (form: FormSchema, targetTeamId: string) => Promise<void>;
+  onOpenTeamModal?: () => void;
   onBackToDashboard: () => void;
   onOpenPublicView: (slug: string) => void;
 }
 
+type PendingConfirmation =
+  | { kind: 'delete_page'; pageId: string; pageTitle: string; blockCount: number }
+  | { kind: 'delete_container'; componentId: string; label: string; childCount: number }
+  | { kind: 'publish_logic_errors'; errorCount: number; firstErrorMessage: string };
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  return (
+    tag === 'input' ||
+    tag === 'textarea' ||
+    tag === 'select' ||
+    target.isContentEditable
+  );
+}
+
 export const FormEditor: React.FC<FormEditorProps> = ({
   initialForm,
+  initialTab = 'build',
+  teamId = null,
+  team = null,
+  teamRole = null,
+  onShareLocalFormToTeam,
+  onOpenTeamModal,
   onBackToDashboard,
   onOpenPublicView,
 }) => {
-  const [form, setForm] = useState<FormSchema>(initialForm);
-  const [steps, setSteps] = useState<FormStep[]>(() => ensureFormSteps(initialForm));
-  const [activeStepNumber, setActiveStepNumber] = useState<number>(1);
-  const [viewAllSteps, setViewAllSteps] = useState<boolean>(false);
+  const { firebaseUser, teamMembers } = useFirebase();
+  const isTeamForm = Boolean(teamId && firebaseUser);
+  const isReadOnly = isTeamForm && teamRole === 'viewer';
 
-  // Undo / Redo history stack
-  const [history, setHistory] = useState<{ form: FormSchema; steps: FormStep[] }[]>([
-    { form: initialForm, steps: ensureFormSteps(initialForm) }
-  ]);
-  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  // Sync guards to prevent infinite echo loops in real-time co-authoring
+  const isRemoteUpdateRef = useRef(false);
+  const versionRef = useRef<number>((initialForm as any).version || 1);
+  const hasLocalChangesRef = useRef(false);
+  const pendingActivityRef = useRef<ActivityNote | null>(null);
 
-  const commitChange = (newForm: FormSchema, newSteps: FormStep[]) => {
-    const updatedForm = { ...newForm, steps: newSteps };
-    setForm(updatedForm);
-    setSteps(newSteps);
-
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ form: updatedForm, steps: newSteps });
-    if (newHistory.length > 35) newHistory.shift();
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
-  };
-
-  const handleUndo = () => {
-    if (historyIndex > 0) {
-      const prev = history[historyIndex - 1];
-      setForm(prev.form);
-      setSteps(prev.steps);
-      setHistoryIndex(historyIndex - 1);
+  const handleLocalMutation = useCallback((_nextDoc: unknown, note?: ActivityNote) => {
+    isRemoteUpdateRef.current = false;
+    hasLocalChangesRef.current = true;
+    if (note) {
+      pendingActivityRef.current = note;
     }
-  };
+  }, []);
 
-  const handleRedo = () => {
-    if (historyIndex < history.length - 1) {
-      const next = history[historyIndex + 1];
-      setForm(next.form);
-      setSteps(next.steps);
-      setHistoryIndex(historyIndex + 1);
-    }
-  };
+  // Central Editor Engine backed by immutable Document Engine + History Engine
+  const studio = useFormStudio(initialForm, {
+    readOnly: isReadOnly,
+    onLocalMutation: handleLocalMutation,
+  });
 
-  // Keyboard shortcuts for undo/redo
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        if (e.shiftKey) {
-          handleRedo();
-        } else {
-          handleUndo();
-        }
-        e.preventDefault();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-        handleRedo();
-        e.preventDefault();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [historyIndex, history]);
+  const { document: doc, legacyForm } = studio;
 
-  const [activeFieldId, setActiveFieldId] = useState<string | null>(
-    initialForm.fields[0]?.id || null
-  );
+  // Shared active drag state so sidebar & canvas can validate drop targets synchronously
+  const [activeDrag, setActiveDrag] = useState<StudioDragPayload | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);
+
+  // Mobile-first slide-up drawer state
+  const [mobileSheet, setMobileSheet] = useState<'none' | 'components' | 'pages' | 'inspector'>('none');
+  const [isCoAuthorOpen, setIsCoAuthorOpen] = useState(false);
+
+  // Real-time Co-Authoring state
+  const [collaborators, setCollaborators] = useState<CollaboratorPresence[]>([]);
+  const [comments, setComments] = useState<FormComment[]>([]);
+  const [activity, setActivity] = useState<FormActivityItem[]>([]);
+  const [remoteUpdateBanner, setRemoteUpdateBanner] = useState<string | null>(null);
+
   const [activeTab, setActiveTab] = useState<
     'build' | 'theme' | 'logic' | 'settings' | 'share' | 'analytics'
-  >('build');
+  >(initialTab);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isAIOpen, setIsAIOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Auto-save form whenever changes occur
+  // Confirmation-guarded delete handlers
+  const handleRequestDeleteComponent = useCallback(
+    (componentId: string) => {
+      if (isReadOnly) return;
+      const node = doc.components[componentId];
+      if (!node) return;
+      const childCount = node.children?.length || 0;
+      if (childCount > 0) {
+        setPendingConfirm({
+          kind: 'delete_container',
+          componentId,
+          label: node.content.label || 'Layout Container',
+          childCount,
+        });
+        return;
+      }
+      studio.removeComponent(componentId);
+    },
+    [isReadOnly, doc.components, studio]
+  );
+
+  const handleRequestDeletePage = useCallback(
+    (pageId: string) => {
+      if (isReadOnly || doc.pages.length <= 1) return;
+      const page = doc.pages.find((p) => p.id === pageId);
+      if (!page) return;
+      const blockCount = getAllPageComponents(doc, pageId).length;
+      if (blockCount > 0) {
+        setPendingConfirm({
+          kind: 'delete_page',
+          pageId,
+          pageTitle: page.title || `Page ${page.index}`,
+          blockCount,
+        });
+        return;
+      }
+      studio.deletePage(pageId, { deleteComponents: true });
+    },
+    [isReadOnly, doc, studio]
+  );
+
+  const handleMoveOutOfContainer = useCallback(
+    (componentId: string) => {
+      if (isReadOnly) return;
+      const node = doc.components[componentId];
+      if (!node?.parentId) return;
+      const parent = doc.components[node.parentId];
+      if (!parent) return;
+
+      const grandParentId = parent.parentId ?? null;
+      if (grandParentId && doc.components[grandParentId]) {
+        const siblings = doc.components[grandParentId].children || [];
+        const pIdx = siblings.indexOf(parent.id);
+        studio.moveComponent(componentId, {
+          parentId: grandParentId,
+          index: pIdx >= 0 ? pIdx + 1 : siblings.length,
+        });
+        return;
+      }
+
+      const page = doc.pages.find((p) => p.id === parent.pageId);
+      const pIdx = page ? page.componentIds.indexOf(parent.id) : -1;
+      studio.moveComponent(componentId, {
+        pageId: parent.pageId,
+        parentId: null,
+        index: pIdx >= 0 ? pIdx + 1 : page?.componentIds.length ?? 0,
+      });
+    },
+    [isReadOnly, doc.components, doc.pages, studio]
+  );
+
+  const handleDropPayloadOnPage = useCallback(
+    (payload: StudioDragPayload, targetPageId: string) => {
+      if (isReadOnly) return;
+      if (payload.kind === 'new') {
+        studio.addComponent(payload.componentType, targetPageId);
+      } else {
+        studio.moveComponentToPage(payload.componentId, targetPageId);
+      }
+      studio.selectPageById(targetPageId);
+      setActiveDrag(null);
+    },
+    [isReadOnly, studio]
+  );
+
+  // Keyboard shortcuts: Undo, Redo, Duplicate, Delete, ArrowUp/ArrowDown selection, Escape
   useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (pendingConfirm || isPreviewOpen || isAIOpen) return;
+
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+
+      // Undo / Redo always work (unless typing inside an input/textarea)
+      if (mod && key === 'z' && !isEditableElement(e.target)) {
+        if (e.shiftKey) {
+          studio.redo();
+        } else {
+          studio.undo();
+        }
+        e.preventDefault();
+        return;
+      }
+      if (mod && key === 'y' && !isEditableElement(e.target)) {
+        studio.redo();
+        e.preventDefault();
+        return;
+      }
+
+      // Skip canvas shortcuts while typing inside inputs
+      if (isEditableElement(e.target)) return;
+      if (activeTab !== 'build') return;
+
+      if (key === 'escape') {
+        studio.selectTarget({ kind: 'form' });
+        return;
+      }
+
+      if (mod && key === 'd' && studio.selectedComponentId && !isReadOnly) {
+        e.preventDefault();
+        studio.duplicateComponent(studio.selectedComponentId);
+        return;
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && studio.selectedComponentId && !isReadOnly) {
+        e.preventDefault();
+        handleRequestDeleteComponent(studio.selectedComponentId);
+        return;
+      }
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const list = studio.viewAllPages
+          ? studio.orderedComponents
+          : getAllPageComponents(doc, studio.activePageId);
+        if (list.length === 0) return;
+
+        e.preventDefault();
+        const currentIdx = studio.selectedComponentId
+          ? list.findIndex((c) => c.id === studio.selectedComponentId)
+          : -1;
+        const nextIdx =
+          e.key === 'ArrowDown'
+            ? Math.min(list.length - 1, currentIdx + 1)
+            : currentIdx <= 0
+              ? 0
+              : currentIdx - 1;
+        const nextNode = list[nextIdx];
+        if (nextNode) {
+          studio.selectTarget({ kind: 'component', id: nextNode.id });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    pendingConfirm,
+    isPreviewOpen,
+    isAIOpen,
+    activeTab,
+    isReadOnly,
+    doc,
+    studio,
+    handleRequestDeleteComponent,
+  ]);
+
+  // =========================================================================
+  // Real-Time Co-Authoring Subscriptions (when editing a Team Form)
+  // =========================================================================
+  useEffect(() => {
+    if (!isTeamForm || !teamId || !firebaseUser) return;
+
+    const unsubForm = subscribeToTeamForm(teamId, initialForm.id, (remoteDoc) => {
+      if (!remoteDoc) return;
+      if (
+        remoteDoc.lastEditedBy !== firebaseUser.uid &&
+        remoteDoc.version > versionRef.current
+      ) {
+        isRemoteUpdateRef.current = true;
+        versionRef.current = remoteDoc.version;
+        studio.applyRemoteFormSnapshot(remoteDoc);
+        setRemoteUpdateBanner(`Updated live by ${remoteDoc.lastEditedByName}`);
+        setTimeout(() => setRemoteUpdateBanner(null), 2600);
+      } else if (remoteDoc.version > versionRef.current) {
+        versionRef.current = remoteDoc.version;
+      }
+    });
+
+    const unsubPresence = subscribeToFormPresence(teamId, initialForm.id, setCollaborators);
+    const unsubComments = subscribeToFormComments(teamId, initialForm.id, setComments);
+    const unsubActivity = subscribeToFormActivity(teamId, initialForm.id, setActivity);
+
+    return () => {
+      unsubForm();
+      unsubPresence();
+      unsubComments();
+      unsubActivity();
+    };
+  }, [isTeamForm, teamId, initialForm.id, firebaseUser, studio.applyRemoteFormSnapshot]);
+
+  // Publish live presence immediately + heartbeat every 25s
+  useEffect(() => {
+    if (!isTeamForm || !teamId || !firebaseUser || !teamRole) return;
+
+    const sendPresence = () => {
+      publishFormPresence(
+        teamId,
+        initialForm.id,
+        firebaseUser,
+        teamRole,
+        studio.selectedComponentId,
+        activeTab
+      ).catch(() => {});
+    };
+
+    sendPresence();
+    const interval = setInterval(sendPresence, 25_000);
+    return () => {
+      clearInterval(interval);
+    };
+  }, [
+    isTeamForm,
+    teamId,
+    initialForm.id,
+    firebaseUser,
+    teamRole,
+    studio.selectedComponentId,
+    activeTab,
+  ]);
+
+  // Clean up own presence document when leaving editor
+  useEffect(() => {
+    if (!isTeamForm || !teamId || !firebaseUser) return;
+    const uid = firebaseUser.uid;
+    return () => {
+      clearFormPresence(teamId, initialForm.id, uid);
+    };
+  }, [isTeamForm, teamId, initialForm.id, firebaseUser]);
+
+  // Auto-save form (LocalStorage for personal forms, Firestore for team forms)
+  useEffect(() => {
+    if (isRemoteUpdateRef.current) {
+      isRemoteUpdateRef.current = false;
+      return;
+    }
+    if (isReadOnly) return;
+
+    if (isTeamForm) {
+      if (!hasLocalChangesRef.current || !teamId || !firebaseUser) return;
+      setIsSaving(true);
+      const timer = setTimeout(async () => {
+        const nextVersion = versionRef.current + 1;
+        versionRef.current = nextVersion;
+        const note = pendingActivityRef.current;
+        pendingActivityRef.current = null;
+        hasLocalChangesRef.current = false;
+
+        try {
+          await updateTeamForm(teamId, legacyForm.id, firebaseUser, legacyForm, nextVersion);
+          if (note) {
+            await logFormActivity(teamId, legacyForm.id, firebaseUser, note.action, note.summary);
+          }
+        } finally {
+          setIsSaving(false);
+        }
+      }, 450);
+
+      return () => clearTimeout(timer);
+    }
+
+    // Personal Local Mode
     setIsSaving(true);
     const timer = setTimeout(() => {
-      saveForm({
-        ...form,
-        steps,
-      });
+      saveForm(legacyForm);
       setIsSaving(false);
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [form, steps]);
-
-  // Actions for steps
-  const handleAddStep = () => {
-    const nextNumber = steps.length + 1;
-    const newStep: FormStep = {
-      id: `step_${nextNumber}_${Math.random().toString(36).substring(2, 6)}`,
-      stepNumber: nextNumber,
-      title: `Page ${nextNumber}`,
-      description: `Questions for step ${nextNumber}`,
-    };
-    const updatedSteps = [...steps, newStep];
-    commitChange(form, updatedSteps);
-    setActiveStepNumber(nextNumber);
-    setViewAllSteps(false);
-  };
-
-  const handleUpdateStep = (stepNumber: number, title: string, description?: string) => {
-    const updated = steps.map((s) =>
-      s.stepNumber === stepNumber ? { ...s, title, description } : s
-    );
-    commitChange(form, updated);
-  };
-
-  const handleDeleteStep = (stepNumber: number) => {
-    if (steps.length <= 1) return;
-    const targetStep = Math.max(1, stepNumber - 1);
-    const updatedFields = form.fields.map((f) => {
-      const cur = f.step || 1;
-      if (cur === stepNumber) {
-        return { ...f, step: targetStep };
-      } else if (cur > stepNumber) {
-        return { ...f, step: cur - 1 };
-      }
-      return f;
-    });
-
-    const remainingSteps = steps
-      .filter((s) => s.stepNumber !== stepNumber)
-      .map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
-
-    const updatedForm = { ...form, fields: updatedFields };
-    commitChange(updatedForm, remainingSteps);
-    setActiveStepNumber(Math.min(targetStep, remainingSteps.length));
-  };
-
-  const handleReorderStep = (stepNumber: number, direction: 'left' | 'right') => {
-    const targetNumber = direction === 'left' ? stepNumber - 1 : stepNumber + 1;
-    if (targetNumber < 1 || targetNumber > steps.length) return;
-
-    const newSteps = [...steps];
-    const idxA = newSteps.findIndex((s) => s.stepNumber === stepNumber);
-    const idxB = newSteps.findIndex((s) => s.stepNumber === targetNumber);
-    if (idxA === -1 || idxB === -1) return;
-
-    const temp = newSteps[idxA];
-    newSteps[idxA] = newSteps[idxB];
-    newSteps[idxB] = temp;
-
-    const renumberedSteps = newSteps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
-
-    const updatedFields = form.fields.map((f) => {
-      const cur = f.step || 1;
-      if (cur === stepNumber) return { ...f, step: targetNumber };
-      if (cur === targetNumber) return { ...f, step: stepNumber };
-      return f;
-    });
-
-    const updatedForm = { ...form, fields: updatedFields };
-    commitChange(updatedForm, renumberedSteps);
-    setActiveStepNumber(targetNumber);
-  };
-
-  // Actions for fields
-  const handleAddField = (type: FieldType, targetStep?: number) => {
-    const newFieldId = 'f_' + Math.random().toString(36).substring(2, 8);
-    const defaultLabels: Record<FieldType, string> = {
-      text: 'What is your full name?',
-      textarea: 'Tell us more in detail...',
-      email: 'What is your email address?',
-      phone: 'What is your primary phone number?',
-      url: 'What is your portfolio or website URL?',
-      radio: 'Select the option that best fits:',
-      checkbox: 'Select all that apply:',
-      select: 'Choose from the dropdown list:',
-      rating: 'How satisfied are you with our service?',
-      scale: 'On a scale of 0 to 10, how likely are you to recommend us?',
-      number: 'Enter a numeric amount:',
-      date: 'Select the target date:',
-      statement: 'Important note for delegates:',
-    };
-
-    const assignedStep = targetStep || (!viewAllSteps ? activeStepNumber : 1);
-
-    const newField: FormField = {
-      id: newFieldId,
-      type,
-      label: defaultLabels[type] || 'Untitled Question',
-      required: false,
-      step: assignedStep,
-      options:
-        type === 'radio' || type === 'checkbox' || type === 'select'
-          ? ['Option 1', 'Option 2', 'Option 3']
-          : undefined,
-    };
-
-    const updatedForm = {
-      ...form,
-      fields: [...form.fields, newField],
-    };
-    commitChange(updatedForm, steps);
-    setActiveFieldId(newFieldId);
-  };
-
-  const handleUpdateField = (updatedField: FormField) => {
-    const updatedForm = {
-      ...form,
-      fields: form.fields.map((f) => (f.id === updatedField.id ? updatedField : f)),
-    };
-    commitChange(updatedForm, steps);
-  };
-
-  const handleDeleteField = (id: string) => {
-    const updatedForm = {
-      ...form,
-      fields: form.fields.filter((f) => f.id !== id),
-      logicRules: form.logicRules.filter(
-        (r) => r.sourceFieldId !== id && r.targetFieldId !== id
-      ),
-    };
-    commitChange(updatedForm, steps);
-    if (activeFieldId === id) {
-      setActiveFieldId(null);
-    }
-  };
-
-  const handleDuplicateField = (id: string) => {
-    const target = form.fields.find((f) => f.id === id);
-    if (!target) return;
-
-    const newId = 'f_' + Math.random().toString(36).substring(2, 8);
-    const cloned: FormField = {
-      ...JSON.parse(JSON.stringify(target)),
-      id: newId,
-      label: `${target.label} (Copy)`,
-    };
-
-    const targetIdx = form.fields.findIndex((f) => f.id === id);
-    const newFields = [...form.fields];
-    newFields.splice(targetIdx + 1, 0, cloned);
-
-    const updatedForm = { ...form, fields: newFields };
-    commitChange(updatedForm, steps);
-    setActiveFieldId(newId);
-  };
-
-  const handleMoveField = (index: number, direction: 'up' | 'down') => {
-    const targetIdx = direction === 'up' ? index - 1 : index + 1;
-    if (targetIdx < 0 || targetIdx >= form.fields.length) return;
-
-    const newFields = [...form.fields];
-    const [moved] = newFields.splice(index, 1);
-    newFields.splice(targetIdx, 0, moved);
-
-    const updatedForm = { ...form, fields: newFields };
-    commitChange(updatedForm, steps);
-  };
+  }, [legacyForm, isTeamForm, teamId, firebaseUser, isReadOnly]);
 
   const handleTogglePublish = () => {
-    const updatedForm = {
-      ...form,
-      settings: {
-        ...form.settings,
-        isPublished: !form.settings.isPublished,
-      },
-    };
-    commitChange(updatedForm, steps);
-  };
-
-  const handleUpdateTitle = (title: string) => {
-    const updatedForm = { ...form, title };
-    commitChange(updatedForm, steps);
+    const nextPublished = !doc.settings.isPublished;
+    if (nextPublished && studio.logicValidation.errors.length > 0) {
+      setPendingConfirm({
+        kind: 'publish_logic_errors',
+        errorCount: studio.logicValidation.errors.length,
+        firstErrorMessage: studio.logicValidation.errors[0].message,
+      });
+      return;
+    }
+    studio.updateGlobalSettings(
+      { isPublished: nextPublished },
+      {
+        action: nextPublished ? 'published' : 'unpublished',
+        summary: nextPublished ? 'Published the form live' : 'Switched form to draft',
+      }
+    );
   };
 
   const handleExportSchema = () => {
     const dataStr =
-      'data:text/json;charset=utf-8,' +
-      encodeURIComponent(JSON.stringify({ ...form, steps }, null, 2));
-    const dlAnchor = document.createElement('a');
+      'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(doc, null, 2));
+    const dlAnchor = window.document.createElement('a');
     dlAnchor.setAttribute('href', dataStr);
-    dlAnchor.setAttribute('download', `${form.settings.slug || 'form'}-schema.json`);
+    dlAnchor.setAttribute('download', `${doc.settings.slug || 'form'}-studio-document-v2.json`);
     dlAnchor.click();
   };
 
-  const activeField = form.fields.find((f) => f.id === activeFieldId) || null;
+  const openCommentsCount = comments.filter((c) => !c.resolved).length;
 
   return (
-    <div className="min-h-screen bg-white flex flex-col">
-      {/* Top Header */}
+    <div className="min-h-[100dvh] bg-[#F2F0EC] flex flex-col relative">
+      {/* D. TOP TOOLBAR */}
       <EditorHeader
-        form={form}
-        onChangeTitle={handleUpdateTitle}
+        form={legacyForm}
+        onChangeTitle={studio.updateTitle}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenPreview={() => setIsPreviewOpen(true)}
         onOpenAIGenerator={() => setIsAIOpen(true)}
         onBackToDashboard={onBackToDashboard}
         onTogglePublish={handleTogglePublish}
-        canUndo={historyIndex > 0}
-        canRedo={historyIndex < history.length - 1}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
+        canUndo={studio.canUndo}
+        canRedo={studio.canRedo}
+        onUndo={studio.undo}
+        onRedo={studio.redo}
         isSaving={isSaving}
+        canvasViewport={studio.canvasViewport}
+        onChangeViewport={studio.setCanvasViewport}
+        isLivePreviewMode={studio.isLivePreviewMode}
+        onToggleLivePreview={studio.toggleLivePreviewMode}
+        activePageIndex={studio.activePageIndex}
+        totalPages={studio.pages.length}
+        onSelectPageByNumber={studio.selectPageByNumber}
+        isTeamForm={isTeamForm}
+        isReadOnly={isReadOnly}
+        collaborators={collaborators}
+        openCommentsCount={openCommentsCount}
+        logicErrorCount={studio.logicValidation.errors.length}
+        onOpenCoAuthor={() => setIsCoAuthorOpen(true)}
       />
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Subtle Live Sync Toast when a teammate edits */}
+      {remoteUpdateBanner && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-full bg-[#0B0D0F] text-[#F7F6F3] text-xs font-medium shadow-lg flex items-center gap-2 pointer-events-none">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <span>{remoteUpdateBanner}</span>
+        </div>
+      )}
+
+      {/* Main Four-Zone Studio Body */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-x-hidden lg:overflow-hidden">
         {activeTab === 'build' && (
           <>
+            {/* A. LEFT SIDEBAR — Components & Pages */}
             <FieldsSidebar
-              fields={form.fields}
-              activeFieldId={activeFieldId}
-              onSelectField={setActiveFieldId}
-              onAddField={handleAddField}
-              onDeleteField={handleDeleteField}
-              onMoveField={handleMoveField}
-              layoutMode={form.layoutMode}
-              onChangeLayoutMode={(mode) => {
-                const updated = { ...form, layoutMode: mode };
-                commitChange(updated, steps);
-              }}
+              document={doc}
+              activePageId={studio.activePageId}
+              activeComponentId={studio.selectedComponentId}
+              viewAllPages={studio.viewAllPages}
+              onToggleViewAllPages={studio.toggleViewAllPages}
+              onSelectPage={(pageId) => studio.selectPageById(pageId, true)}
+              onCreatePage={() => studio.createPage()}
+              onDuplicatePage={(pageId) => studio.duplicatePage(pageId)}
+              onRenamePage={(pageId, title) => studio.updatePage(pageId, { title })}
+              onRequestDeletePage={handleRequestDeletePage}
+              onReorderPage={studio.reorderPage}
+              onSelectComponent={studio.selectComponent}
+              onInsertComponent={(type) => studio.insertComponentFromLibrary(type)}
+              onRequestDeleteComponent={handleRequestDeleteComponent}
+              onMoveComponentByOffset={studio.moveComponentByOffset}
+              onDropPayloadOnPage={handleDropPayloadOnPage}
+              activeDrag={activeDrag}
+              onDragStartPayload={setActiveDrag}
+              onDragEndPayload={() => setActiveDrag(null)}
+              layoutMode={doc.layoutMode}
+              onChangeLayoutMode={studio.updateLayoutMode}
+              isReadOnly={isReadOnly}
             />
 
+            {/* B. CENTRE CANVAS — Visual Form Editing Area */}
             <EditorCanvas
-              form={form}
-              steps={steps}
-              activeStepNumber={activeStepNumber}
-              onSelectStep={(num) => {
-                setActiveStepNumber(num);
-                setViewAllSteps(false);
+              document={doc}
+              activePageId={studio.activePageId}
+              viewAllPages={studio.viewAllPages}
+              canvasViewport={studio.canvasViewport}
+              isLivePreviewMode={studio.isLivePreviewMode}
+              onExitLivePreview={() => studio.setIsLivePreviewMode(false)}
+              selection={studio.selection}
+              onSelectTarget={studio.selectTarget}
+              onSelectPageById={studio.selectPageById}
+              onCreatePage={() => studio.createPage()}
+              onToggleViewAllPages={studio.toggleViewAllPages}
+              onUpdateTitle={studio.updateTitle}
+              onUpdateDescription={studio.updateDescription}
+              onUpdateComponent={studio.updateComponent}
+              onRequestDeleteComponent={handleRequestDeleteComponent}
+              onDuplicateComponent={studio.duplicateComponent}
+              onMoveComponent={studio.moveComponent}
+              onMoveComponentByOffset={studio.moveComponentByOffset}
+              onMoveOutOfContainer={handleMoveOutOfContainer}
+              onAddComponent={studio.addComponent}
+              canNestComponent={studio.canNestComponent}
+              activeDrag={activeDrag}
+              onDragStartPayload={setActiveDrag}
+              onDragEndPayload={() => setActiveDrag(null)}
+              onDropPayloadOnPage={handleDropPayloadOnPage}
+              onChangeLayoutMode={studio.updateLayoutMode}
+              onOpenMobileAddDrawer={() => setMobileSheet('components')}
+              onOpenMobileInspector={(id) => {
+                studio.selectComponent(id);
+                setMobileSheet('inspector');
               }}
-              onAddStep={handleAddStep}
-              onUpdateStep={handleUpdateStep}
-              onDeleteStep={handleDeleteStep}
-              onReorderStep={handleReorderStep}
-              viewAllSteps={viewAllSteps}
-              onToggleViewAll={() => setViewAllSteps(!viewAllSteps)}
-              activeFieldId={activeFieldId}
-              onSelectField={setActiveFieldId}
-              onUpdateField={handleUpdateField}
-              onDeleteField={handleDeleteField}
-              onDuplicateField={handleDuplicateField}
-              onMoveField={handleMoveField}
-              onAddField={handleAddField}
-              onUpdateWelcome={(welcome) => {
-                const updated = { ...form, welcomeScreen: welcome };
-                commitChange(updated, steps);
+              onUpdateWelcome={studio.updateWelcomeScreen}
+              onUpdateThankYou={studio.updateThankYouScreen}
+              collaborators={collaborators}
+              currentUserId={firebaseUser?.uid}
+              comments={comments}
+              onOpenCoAuthor={(fieldId) => {
+                if (fieldId) studio.selectComponent(fieldId);
+                setIsCoAuthorOpen(true);
               }}
-              onUpdateThankYou={(thankYou) => {
-                const updated = { ...form, thankYouScreen: thankYou };
-                commitChange(updated, steps);
-              }}
+              isReadOnly={isReadOnly}
             />
 
+            {/* C. RIGHT INSPECTOR — Contextual Properties Panel */}
             <FieldInspector
-              field={activeField}
-              onUpdateField={handleUpdateField}
-              onDeleteField={handleDeleteField}
-              onDuplicateField={handleDuplicateField}
-              isQuizMode={form.settings.isQuizMode}
-              layoutMode={form.layoutMode}
+              document={doc}
+              selection={studio.selection}
+              selectedComponent={studio.selectedComponent}
+              selectedPage={studio.selectedPage}
+              pages={studio.pages}
+              onSelectTarget={studio.selectTarget}
+              onUpdateComponent={studio.updateComponent}
+              onRequestDeleteComponent={handleRequestDeleteComponent}
+              onDuplicateComponent={studio.duplicateComponent}
+              onMoveToPage={(id, targetPageId) => studio.moveComponentToPage(id, targetPageId)}
+              onMoveOutOfContainer={handleMoveOutOfContainer}
+              onUpdatePage={studio.updatePage}
+              onDuplicatePage={(pageId) => studio.duplicatePage(pageId)}
+              onRequestDeletePage={handleRequestDeletePage}
+              onUpdateTitle={studio.updateTitle}
+              onUpdateDescription={studio.updateDescription}
+              onUpdateLayoutMode={studio.updateLayoutMode}
+              onUpdateGlobalSettings={studio.updateGlobalSettings}
+              onUpdateDesign={studio.updateDesign}
+              onUpdateWelcomeScreen={studio.updateWelcomeScreen}
+              onUpdateThankYouScreen={studio.updateThankYouScreen}
+              canvasViewport={studio.canvasViewport}
+              onResetComponentAppearance={studio.resetComponentAppearance}
+              isReadOnly={isReadOnly}
             />
+
+            {/* Mobile-First Floating Thumb Dock (< lg screens only) */}
+            <div className="lg:hidden fixed bottom-3 inset-x-3 z-30 pointer-events-none">
+              <div className="max-w-md mx-auto pointer-events-auto p-1.5 rounded-full bg-[#0B0D0F]/95 backdrop-blur-xl ring-1 ring-white/15 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.6)] grid grid-cols-5 gap-1">
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => setMobileSheet('components')}
+                  className="min-h-[46px] rounded-full bg-[#0F766E] text-white disabled:opacity-40 flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold active:scale-[0.97] transition-transform"
+                >
+                  <Plus size={16} weight="bold" />
+                  <span>Add</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileSheet('pages')}
+                  className="min-h-[46px] rounded-full text-[#E6E8EB] hover:bg-white/10 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium active:scale-[0.97] transition-colors"
+                >
+                  <Files size={16} weight="regular" />
+                  <span>Pages</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={() => setMobileSheet('inspector')}
+                  className="min-h-[46px] rounded-full text-[#E6E8EB] hover:bg-white/10 disabled:opacity-40 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium active:scale-[0.97] transition-colors"
+                >
+                  <SlidersHorizontal size={16} weight="regular" />
+                  <span>Inspect</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCoAuthorOpen(true)}
+                  className="min-h-[46px] rounded-full text-[#E6E8EB] hover:bg-white/10 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium active:scale-[0.97] transition-colors relative"
+                >
+                  <UsersThree size={16} weight="regular" className="text-emerald-400" />
+                  <span>Team</span>
+                  {openCommentsCount > 0 && (
+                    <span className="absolute top-1.5 right-2.5 w-2 h-2 rounded-full bg-emerald-400" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsPreviewOpen(true)}
+                  className="min-h-[46px] rounded-full text-[#E6E8EB] hover:bg-white/10 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium active:scale-[0.97] transition-colors"
+                >
+                  <Eye size={16} weight="regular" />
+                  <span>Preview</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Mobile Slide-Up Drawers */}
+            {mobileSheet !== 'none' && (
+              <div
+                className="lg:hidden fixed inset-0 z-50 bg-[#0B0D0F]/60 backdrop-blur-sm flex items-end"
+                onClick={() => setMobileSheet('none')}
+              >
+                <div className="w-full" onClick={(e) => e.stopPropagation()}>
+                  {(mobileSheet === 'components' || mobileSheet === 'pages') && (
+                    <FieldsSidebar
+                      key={mobileSheet}
+                      document={doc}
+                      activePageId={studio.activePageId}
+                      activeComponentId={studio.selectedComponentId}
+                      viewAllPages={studio.viewAllPages}
+                      onToggleViewAllPages={studio.toggleViewAllPages}
+                      onSelectPage={(pageId) => studio.selectPageById(pageId, true)}
+                      onCreatePage={() => studio.createPage()}
+                      onDuplicatePage={(pageId) => studio.duplicatePage(pageId)}
+                      onRenamePage={(pageId, title) => studio.updatePage(pageId, { title })}
+                      onRequestDeletePage={handleRequestDeletePage}
+                      onReorderPage={studio.reorderPage}
+                      onSelectComponent={studio.selectComponent}
+                      onInsertComponent={(type) => studio.insertComponentFromLibrary(type)}
+                      onRequestDeleteComponent={handleRequestDeleteComponent}
+                      onMoveComponentByOffset={studio.moveComponentByOffset}
+                      onDropPayloadOnPage={handleDropPayloadOnPage}
+                      activeDrag={activeDrag}
+                      onDragStartPayload={setActiveDrag}
+                      onDragEndPayload={() => setActiveDrag(null)}
+                      layoutMode={doc.layoutMode}
+                      onChangeLayoutMode={studio.updateLayoutMode}
+                      initialTab={mobileSheet}
+                      isMobileDrawer={true}
+                      onCloseMobile={() => setMobileSheet('none')}
+                      isReadOnly={isReadOnly}
+                    />
+                  )}
+                  {mobileSheet === 'inspector' && (
+                    <FieldInspector
+                      document={doc}
+                      selection={studio.selection}
+                      selectedComponent={studio.selectedComponent}
+                      selectedPage={studio.selectedPage}
+                      pages={studio.pages}
+                      onSelectTarget={studio.selectTarget}
+                      onUpdateComponent={studio.updateComponent}
+                      onRequestDeleteComponent={handleRequestDeleteComponent}
+                      onDuplicateComponent={studio.duplicateComponent}
+                      onMoveToPage={(id, targetPageId) =>
+                        studio.moveComponentToPage(id, targetPageId)
+                      }
+                      onMoveOutOfContainer={handleMoveOutOfContainer}
+                      onUpdatePage={studio.updatePage}
+                      onDuplicatePage={(pageId) => studio.duplicatePage(pageId)}
+                      onRequestDeletePage={handleRequestDeletePage}
+                      onUpdateTitle={studio.updateTitle}
+                      onUpdateDescription={studio.updateDescription}
+                      onUpdateLayoutMode={studio.updateLayoutMode}
+                      onUpdateGlobalSettings={studio.updateGlobalSettings}
+                      onUpdateDesign={studio.updateDesign}
+                      onUpdateWelcomeScreen={studio.updateWelcomeScreen}
+                      onUpdateThankYouScreen={studio.updateThankYouScreen}
+                      canvasViewport={studio.canvasViewport}
+                      onResetComponentAppearance={studio.resetComponentAppearance}
+                      isMobileDrawer={true}
+                      onCloseMobile={() => setMobileSheet('none')}
+                      isReadOnly={isReadOnly}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
           </>
         )}
 
         {activeTab === 'theme' && (
           <ThemeStudio
-            theme={form.theme}
-            onChangeTheme={(newTheme: FormTheme) => {
-              const updated = { ...form, theme: newTheme };
-              commitChange(updated, steps);
+            document={doc}
+            onUpdateDesign={(patch) => {
+              studio.updateDesign(patch, {
+                action: 'theme_updated',
+                summary: 'Updated form design & theme',
+              });
             }}
-            formTitle={form.title}
+            onResetDesign={studio.resetDesignToDefault}
+            isReadOnly={isReadOnly}
           />
         )}
 
         {activeTab === 'logic' && (
           <VisualLogicBuilder
-            form={form}
-            onUpdateRules={(newRules: LogicRule[]) => {
-              const updated = { ...form, logicRules: newRules };
-              commitChange(updated, steps);
-            }}
+            document={doc}
+            onUpdateRules={studio.updateLogicRules}
+            onUpdateVariables={studio.updateVariables}
+            onRenameVariable={studio.renameVariable}
+            isReadOnly={isReadOnly}
           />
         )}
 
         {activeTab === 'settings' && (
           <SettingsTab
-            form={form}
+            form={legacyForm}
             onUpdateSettings={(newSettings: FormSettings) => {
-              const updated = { ...form, settings: newSettings };
-              commitChange(updated, steps);
+              studio.updateGlobalSettings(newSettings, {
+                action: 'settings_updated',
+                summary: 'Updated form settings',
+              });
             }}
             onExportSchema={handleExportSchema}
           />
@@ -424,17 +756,134 @@ export const FormEditor: React.FC<FormEditorProps> = ({
 
         {activeTab === 'share' && (
           <ShareTab
-            form={form}
-            onOpenPublicView={() => onOpenPublicView(form.settings.slug)}
+            form={legacyForm}
+            onOpenPublicView={() => onOpenPublicView(doc.settings.slug)}
           />
         )}
 
-        {activeTab === 'analytics' && <AnalyticsTab form={form} onRefreshData={() => {}} />}
+        {activeTab === 'analytics' && <AnalyticsTab form={legacyForm} onRefreshData={() => {}} />}
       </div>
+
+      {/* In-App Confirmation Modal for Deleting Non-Empty Pages/Containers & Pre-Publish Logic Checks */}
+      <ConfirmDialog
+        isOpen={Boolean(pendingConfirm)}
+        title={
+          pendingConfirm?.kind === 'delete_page'
+            ? `Delete "${pendingConfirm.pageTitle}"?`
+            : pendingConfirm?.kind === 'delete_container'
+              ? `Delete "${pendingConfirm.label}"?`
+              : pendingConfirm?.kind === 'publish_logic_errors'
+                ? `Fix ${pendingConfirm.errorCount} logic ${
+                    pendingConfirm.errorCount === 1 ? 'issue' : 'issues'
+                  } before publishing?`
+                : ''
+        }
+        description={
+          pendingConfirm?.kind === 'delete_page'
+            ? `This page contains ${pendingConfirm.blockCount} ${
+                pendingConfirm.blockCount === 1 ? 'block' : 'blocks'
+              }. You can delete the page and its blocks, or move its blocks onto the previous page. You can always press Undo to revert.`
+            : pendingConfirm?.kind === 'delete_container'
+              ? `This layout container holds ${pendingConfirm.childCount} nested ${
+                  pendingConfirm.childCount === 1 ? 'block' : 'blocks'
+                }. Deleting it will also remove all nested blocks inside. You can press Undo to revert.`
+              : pendingConfirm?.kind === 'publish_logic_errors'
+                ? `${pendingConfirm.firstErrorMessage} Open the Logic Builder to fix broken references or navigation loops before going live.`
+                : ''
+        }
+        confirmLabel={
+          pendingConfirm?.kind === 'delete_page'
+            ? 'Delete Page & Blocks'
+            : pendingConfirm?.kind === 'delete_container'
+              ? 'Delete Container'
+              : 'Review Logic Rules'
+        }
+        secondaryActionLabel={
+          pendingConfirm?.kind === 'delete_page'
+            ? 'Keep Blocks on Previous Page'
+            : pendingConfirm?.kind === 'publish_logic_errors'
+              ? 'Publish Anyway'
+              : undefined
+        }
+        onSecondaryAction={
+          pendingConfirm?.kind === 'delete_page'
+            ? () => {
+                studio.deletePage(pendingConfirm.pageId, { deleteComponents: false });
+                setPendingConfirm(null);
+              }
+            : pendingConfirm?.kind === 'publish_logic_errors'
+              ? () => {
+                  studio.updateGlobalSettings(
+                    { isPublished: true },
+                    {
+                      action: 'published',
+                      summary: 'Published the form live',
+                    }
+                  );
+                  setPendingConfirm(null);
+                }
+              : undefined
+        }
+        onConfirm={() => {
+          if (!pendingConfirm) return;
+          if (pendingConfirm.kind === 'delete_page') {
+            studio.deletePage(pendingConfirm.pageId, { deleteComponents: true });
+          } else if (pendingConfirm.kind === 'delete_container') {
+            studio.removeComponent(pendingConfirm.componentId);
+          } else if (pendingConfirm.kind === 'publish_logic_errors') {
+            setActiveTab('logic');
+          }
+          setPendingConfirm(null);
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
+
+      {/* Co-Authoring Panel (Live Collaborators, Comments, Activity, Share-to-Team) */}
+      <CoAuthorPanel
+        isOpen={isCoAuthorOpen}
+        onClose={() => setIsCoAuthorOpen(false)}
+        isTeamForm={isTeamForm}
+        team={team}
+        role={teamRole}
+        teamMembers={teamMembers}
+        collaborators={collaborators}
+        comments={comments}
+        activity={activity}
+        fields={legacyForm.fields}
+        activeFieldId={studio.selectedComponentId}
+        onSelectField={(fieldId) => {
+          studio.selectComponent(fieldId);
+          setActiveTab('build');
+        }}
+        onAddComment={async (text, fieldId) => {
+          if (!teamId || !firebaseUser) return;
+          await addFormComment(teamId, doc.id, firebaseUser, text, fieldId);
+        }}
+        onToggleResolveComment={async (commentId, resolved) => {
+          if (!teamId) return;
+          await toggleResolveComment(teamId, doc.id, commentId, resolved);
+        }}
+        onDeleteComment={async (commentId) => {
+          if (!teamId) return;
+          await deleteFormComment(teamId, doc.id, commentId);
+        }}
+        onMoveToTeam={
+          onShareLocalFormToTeam
+            ? async (targetTeamId) => {
+                await onShareLocalFormToTeam(legacyForm, targetTeamId);
+                setIsCoAuthorOpen(false);
+              }
+            : undefined
+        }
+        onOpenTeamModal={() => {
+          setIsCoAuthorOpen(false);
+          if (onOpenTeamModal) onOpenTeamModal();
+        }}
+      />
 
       {/* Preview Modal */}
       <PreviewModal
-        form={form}
+        form={legacyForm}
         isOpen={isPreviewOpen}
         onClose={() => setIsPreviewOpen(false)}
       />
@@ -444,9 +893,10 @@ export const FormEditor: React.FC<FormEditorProps> = ({
         isOpen={isAIOpen}
         onClose={() => setIsAIOpen(false)}
         onFormGenerated={(generated: FormSchema) => {
-          const newSteps = ensureFormSteps(generated);
-          commitChange(generated, newSteps);
-          setActiveFieldId(generated.fields[0]?.id || null);
+          studio.replaceDocument(
+            { ...generated, id: doc.id },
+            { action: 'ai_updated', summary: 'Updated form questions with AI Helper' }
+          );
         }}
       />
     </div>

@@ -369,26 +369,34 @@ export const SteppedRunner: React.FC<RunnerProps> = ({ form, onSubmit }) => {
           </div>
 
           {/* Progress Percentage Bar */}
-          <div className="space-y-1.5 pt-1">
-            <div className="flex items-center justify-between text-xs opacity-75">
-              <span className="font-semibold uppercase tracking-wider text-[11px]">
+          {form.settings.showProgressBar !== false ? (
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between text-xs opacity-75">
+                <span className="font-semibold uppercase tracking-wider text-[11px]">
+                  {activeStepObj?.title || `Step ${currentStep}`}
+                </span>
+                <span className="font-mono tabular-nums text-[11px]">
+                  {Math.round((currentStep / maxStep) * 100)}% Complete
+                </span>
+              </div>
+
+              <div className="w-full bg-neutral-100 h-1.5 rounded-full overflow-hidden">
+                <div
+                  className="h-full transition-all duration-300"
+                  style={{
+                    width: `${(currentStep / maxStep) * 100}%`,
+                    backgroundColor: form.theme.primaryColor,
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="pt-1">
+              <span className="font-semibold uppercase tracking-wider text-[11px] opacity-75">
                 {activeStepObj?.title || `Step ${currentStep}`}
               </span>
-              <span className="font-mono tabular-nums text-[11px]">
-                {Math.round((currentStep / maxStep) * 100)}% Complete
-              </span>
             </div>
-
-            <div className="w-full bg-neutral-100 h-1.5 rounded-full overflow-hidden">
-              <div
-                className="h-full transition-all duration-300"
-                style={{
-                  width: `${(currentStep / maxStep) * 100}%`,
-                  backgroundColor: form.theme.primaryColor,
-                }}
-              />
-            </div>
-          </div>
+          )}
 
           {/* Step Subtitle / Description */}
           {activeStepObj?.description && (

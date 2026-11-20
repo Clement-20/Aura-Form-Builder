@@ -1,0 +1,515 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile storing PII isolated strictly to the owner.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 200
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["free", "pro", "enterprise"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "color", "plan", "updatedAt"]
+    },
+    "UserTeamMembership": {
+      "title": "UserTeamMembership",
+      "description": "Owner-scoped index of teams a user belongs to for secure list queries.",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "editor", "viewer"]
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["teamId", "teamName", "role", "userId", "joinedAt"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "Collaborative workspace owned by a user with shared forms and team members.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "inviteCode": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "description", "ownerId", "inviteCode", "createdAt", "updatedAt"]
+    },
+    "TeamMember": {
+      "title": "TeamMember",
+      "description": "Publicly non-PII team roster record defining a user's RBAC role within a team.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "editor", "viewer"]
+        },
+        "inviteCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "teamId", "displayName", "color", "role", "joinedAt"]
+    },
+    "TeamInvite": {
+      "title": "TeamInvite",
+      "description": "Single-document lookup invite code allowing verified users to join a team with a pre-assigned role.",
+      "type": "object",
+      "properties": {
+        "inviteCode": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "defaultRole": {
+          "type": "string",
+          "enum": ["editor", "viewer"]
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["inviteCode", "teamId", "teamName", "defaultRole", "createdBy", "active", "createdAt"]
+    },
+    "TeamForm": {
+      "title": "TeamForm",
+      "description": "Shared form schema collaboratively authored in real time by team members.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "category": {
+          "type": "string",
+          "enum": ["survey", "quiz", "registration", "lead-gen", "feedback", "application"]
+        },
+        "layoutMode": {
+          "type": "string",
+          "enum": ["standard", "conversational", "stepped"]
+        },
+        "theme": {
+          "type": "object"
+        },
+        "welcomeScreen": {
+          "type": "object"
+        },
+        "thankYouScreen": {
+          "type": "object"
+        },
+        "fields": {
+          "type": "array"
+        },
+        "steps": {
+          "type": "array"
+        },
+        "logicRules": {
+          "type": "array"
+        },
+        "settings": {
+          "type": "object"
+        },
+        "responsesCount": {
+          "type": "number"
+        },
+        "lastEditedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lastEditedByName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "version": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "teamId",
+        "ownerId",
+        "title",
+        "description",
+        "category",
+        "layoutMode",
+        "theme",
+        "welcomeScreen",
+        "thankYouScreen",
+        "fields",
+        "steps",
+        "logicRules",
+        "settings",
+        "responsesCount",
+        "lastEditedBy",
+        "lastEditedByName",
+        "version",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FormPresence": {
+      "title": "FormPresence",
+      "description": "Real-time presence heartbeat showing which team collaborator is viewing or editing a form field.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "formId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "editor", "viewer"]
+        },
+        "activeFieldId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "activeTab": {
+          "type": "string",
+          "enum": ["build", "theme", "logic", "settings", "share", "analytics"]
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "teamId", "formId", "displayName", "color", "role", "activeFieldId", "activeTab", "lastSeenAt"]
+    },
+    "FormComment": {
+      "title": "FormComment",
+      "description": "Real-time collaborator comment attached to a shared form or a specific question.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "formId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fieldId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "authorId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "authorPhotoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "authorColor": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "resolved": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "teamId",
+        "formId",
+        "fieldId",
+        "authorId",
+        "authorName",
+        "authorColor",
+        "text",
+        "resolved",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FormActivity": {
+      "title": "FormActivity",
+      "description": "Append-only co-authoring audit log entry showing who updated the form and what changed.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "formId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "authorColor": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "action": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "teamId", "formId", "authorId", "authorName", "authorColor", "action", "summary", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile (owner-only access for PII isolation)."
+    },
+    "/users/{userId}/teamMemberships/{teamId}": {
+      "schema": { "$ref": "#/entities/UserTeamMembership" },
+      "description": "Owner-scoped directory of teams the user belongs to."
+    },
+    "/teams/{teamId}": {
+      "schema": { "$ref": "#/entities/Team" },
+      "description": "Collaborative team workspaces."
+    },
+    "/teams/{teamId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/TeamMember" },
+      "description": "Team membership roster with RBAC roles (owner, editor, viewer)."
+    },
+    "/teamInvites/{inviteCode}": {
+      "schema": { "$ref": "#/entities/TeamInvite" },
+      "description": "Shareable invite codes for joining teams (single-document get only)."
+    },
+    "/teams/{teamId}/forms/{formId}": {
+      "schema": { "$ref": "#/entities/TeamForm" },
+      "description": "Real-time co-authored team forms."
+    },
+    "/teams/{teamId}/forms/{formId}/presence/{memberId}": {
+      "schema": { "$ref": "#/entities/FormPresence" },
+      "description": "Live collaborator presence & active field selection."
+    },
+    "/teams/{teamId}/forms/{formId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/FormComment" },
+      "description": "Live collaborator comments pinned to forms or specific fields."
+    },
+    "/teams/{teamId}/forms/{formId}/activity/{activityId}": {
+      "schema": { "$ref": "#/entities/FormActivity" },
+      "description": "Append-only co-authoring activity trail."
+    }
+  }
+}
