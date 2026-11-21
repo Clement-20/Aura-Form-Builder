@@ -14,10 +14,16 @@ import {
   SlidersHorizontal,
   Function as FunctionIcon,
   X,
+  ShieldCheck,
+  Trophy,
+  Sparkle,
 } from '@phosphor-icons/react';
 import {
   AnyLogicRule,
+  CrossFieldValidationRule,
   FormDocument,
+  FormOutcomeConfig,
+  FormScoringConfig,
   FormVariableDefinition,
   LogicActionConfig,
   LogicActionType,
@@ -28,12 +34,15 @@ import {
   createEmptyLogicRule,
   defaultLogicEngine,
   duplicateStudioLogicRule,
+  evaluateFormOutcomes,
+  evaluateFormScoring,
   formComponentRegistry,
   getOrderedComponents,
   isSafeHttpUrl,
   logicActionRegistry,
   normalizeLogicRule,
   serializeStudioLogicRule,
+  validateAndSanitizeSubmission,
   validateFormLogic,
   validateVariableAssignment,
 } from '../../studio';
@@ -43,6 +52,9 @@ import {
 } from './LogicConditionGroupEditor';
 import { LogicDebuggerPanel } from './LogicDebuggerPanel';
 import { VariablesManager } from './VariablesManager';
+import { CrossFieldValidationManager } from './CrossFieldValidationManager';
+import { ScoringManager } from './ScoringManager';
+import { OutcomeBuilder } from './OutcomeBuilder';
 import { FormulaEditor } from './FormulaEditor';
 import { AnswerPipingPicker } from './AnswerPipingPicker';
 
@@ -56,6 +68,9 @@ interface VisualLogicBuilderProps {
   onUpdateRules: (rules: StudioLogicRule[]) => void;
   onUpdateVariables: (variables: FormVariableDefinition[]) => void;
   onRenameVariable?: (variableId: string, nextName: string) => { error?: string };
+  onUpdateCrossFieldValidations?: (rules: CrossFieldValidationRule[]) => void;
+  onUpdateScoring?: (scoring: FormScoringConfig) => void;
+  onUpdateOutcomes?: (outcomes: FormOutcomeConfig) => void;
   isReadOnly?: boolean;
 }
 
@@ -72,6 +87,9 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
   onUpdateRules,
   onUpdateVariables,
   onRenameVariable,
+  onUpdateCrossFieldValidations,
+  onUpdateScoring,
+  onUpdateOutcomes,
   isReadOnly = false,
 }) => {
   // Normalize all rules into structured StudioLogicRule[]
@@ -83,14 +101,16 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
     [document]
   );
 
-  const [workspaceTab, setWorkspaceTab] = useState<'rules' | 'variables'>('rules');
+  const [workspaceTab, setWorkspaceTab] = useState<
+    'rules' | 'validation' | 'variables' | 'scoring' | 'outcomes'
+  >('rules');
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(
     () => rules[0]?.id || null
   );
   const [searchQuery, setSearchQuery] = useState('');
   const [showDebugger, setShowDebugger] = useState(true);
 
-  // Debugger simulated answers
+  // Debugger simulated answers (strictly isolated creator test state, never saved)
   const [testAnswers, setTestAnswers] = useState<Record<string, unknown>>({});
 
   const orderedComponents = useMemo(() => getOrderedComponents(document), [document]);
@@ -301,12 +321,61 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
     (e) => e.code === 'CIRCULAR_CALCULATION'
   );
 
+  // Live creator-only simulation of validation, multi-category scoring, and personalised outcomes
+  const simulatedValidation = useMemo(
+    () => validateAndSanitizeSubmission(document, testAnswers),
+    [document, testAnswers]
+  );
+
+  const effectiveSimulatedAnswers = useMemo(
+    () => ({ ...testAnswers, ...evaluation.calculatedComponentValues }),
+    [testAnswers, evaluation.calculatedComponentValues]
+  );
+
+  const liveScoring = useMemo(
+    () =>
+      evaluateFormScoring(
+        document,
+        effectiveSimulatedAnswers,
+        evaluation.resolvedVariables,
+        evaluation.visibleComponentIds
+      ),
+    [document, effectiveSimulatedAnswers, evaluation.resolvedVariables, evaluation.visibleComponentIds]
+  );
+
+  const liveOutcomeResult = useMemo(
+    () =>
+      evaluateFormOutcomes(
+        document,
+        effectiveSimulatedAnswers,
+        evaluation.resolvedVariables,
+        liveScoring,
+        {
+          document,
+          answers: effectiveSimulatedAnswers,
+          variables: evaluation.resolvedVariables,
+          formattedVariables: evaluation.formattedVariables,
+        }
+      ),
+    [
+      document,
+      effectiveSimulatedAnswers,
+      evaluation.resolvedVariables,
+      evaluation.formattedVariables,
+      liveScoring,
+    ]
+  );
+
+  const crossFieldCount = document.logic.crossFieldValidations?.length || 0;
+  const scoringRuleCount = document.scoring?.rules?.length || 0;
+  const outcomeCount = document.outcomes?.outcomes?.length || 0;
+
   return (
     <div className="flex-1 flex flex-col bg-[#F7F6F3] overflow-hidden min-h-0">
-      {/* TOP SUB-BAR: Logic Rules vs Variables & Calculations + Validation Status + Debugger Toggle */}
+      {/* TOP SUB-BAR: Logic Rules, Cross-Field Validation, Variables, Scoring & Outcomes */}
       <div className="px-4 py-2.5 bg-white border-b border-black/[0.08] flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div
-          className="inline-flex items-center rounded-lg border border-black/[0.08] bg-[#F7F6F3] p-0.5"
+          className="inline-flex items-center rounded-lg border border-black/[0.08] bg-[#F7F6F3] p-0.5 overflow-x-auto max-w-full"
           role="tablist"
           aria-label="Logic workspace view"
         >
@@ -315,7 +384,7 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
             role="tab"
             aria-selected={workspaceTab === 'rules'}
             onClick={() => setWorkspaceTab('rules')}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
               workspaceTab === 'rules'
                 ? 'bg-[#0B0D0F] text-[#F7F6F3]'
                 : 'text-[#5C6066] hover:text-[#0B0D0F]'
@@ -328,19 +397,68 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
           <button
             type="button"
             role="tab"
+            aria-selected={workspaceTab === 'validation'}
+            onClick={() => setWorkspaceTab('validation')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              workspaceTab === 'validation'
+                ? 'bg-[#0B0D0F] text-[#F7F6F3]'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <ShieldCheck size={13} weight="duotone" />
+            <span>Cross-Field</span>
+            <span className="font-mono text-[10px] opacity-80 tabular-nums">
+              ({crossFieldCount})
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={workspaceTab === 'variables'}
             onClick={() => setWorkspaceTab('variables')}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
               workspaceTab === 'variables'
                 ? 'bg-[#0B0D0F] text-[#F7F6F3]'
                 : 'text-[#5C6066] hover:text-[#0B0D0F]'
             }`}
           >
             <FunctionIcon size={13} weight="duotone" />
-            <span>Variables &amp; Calculations</span>
+            <span>Variables</span>
             <span className="font-mono text-[10px] opacity-80 tabular-nums">
               ({document.variables.length})
             </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === 'scoring'}
+            onClick={() => setWorkspaceTab('scoring')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              workspaceTab === 'scoring'
+                ? 'bg-[#0B0D0F] text-[#F7F6F3]'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <Trophy size={13} weight="duotone" />
+            <span>Scoring</span>
+            <span className="font-mono text-[10px] opacity-80 tabular-nums">
+              ({scoringRuleCount})
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === 'outcomes'}
+            onClick={() => setWorkspaceTab('outcomes')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              workspaceTab === 'outcomes'
+                ? 'bg-[#0B0D0F] text-[#F7F6F3]'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <Sparkle size={13} weight="duotone" />
+            <span>Outcomes</span>
+            <span className="font-mono text-[10px] opacity-80 tabular-nums">({outcomeCount})</span>
           </button>
         </div>
 
@@ -365,7 +483,7 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
             ) : (
               <span className="inline-flex items-center gap-1.5 text-[#0F766E] font-medium">
                 <CheckCircle size={15} weight="fill" />
-                <span>All rules &amp; formulas valid</span>
+                <span>All rules, validations &amp; outcomes valid</span>
               </span>
             )}
           </div>
@@ -392,6 +510,37 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
           onUpdateVariables={onUpdateVariables}
           onRenameVariable={onRenameVariable}
           sampleAnswers={testAnswers}
+          resolvedVariables={evaluation.resolvedVariables}
+          formattedVariables={evaluation.formattedVariables}
+          isReadOnly={isReadOnly}
+        />
+      ) : workspaceTab === 'validation' ? (
+        <CrossFieldValidationManager
+          document={document}
+          onUpdateRules={(next) => onUpdateCrossFieldValidations?.(next)}
+          sampleAnswers={effectiveSimulatedAnswers}
+          resolvedVariables={evaluation.resolvedVariables}
+          formattedVariables={evaluation.formattedVariables}
+          visibleComponentIds={evaluation.visibleComponentIds}
+          disabledComponentIds={evaluation.disabledComponentIds}
+          isReadOnly={isReadOnly}
+        />
+      ) : workspaceTab === 'scoring' ? (
+        <ScoringManager
+          document={document}
+          onUpdateScoring={(next) => onUpdateScoring?.(next)}
+          liveScoring={liveScoring}
+          sampleAnswers={effectiveSimulatedAnswers}
+          resolvedVariables={evaluation.resolvedVariables}
+          isReadOnly={isReadOnly}
+        />
+      ) : workspaceTab === 'outcomes' ? (
+        <OutcomeBuilder
+          document={document}
+          onUpdateOutcomes={(next) => onUpdateOutcomes?.(next)}
+          liveScoring={liveScoring}
+          liveOutcomeResult={liveOutcomeResult}
+          sampleAnswers={effectiveSimulatedAnswers}
           resolvedVariables={evaluation.resolvedVariables}
           formattedVariables={evaluation.formattedVariables}
           isReadOnly={isReadOnly}
@@ -1601,6 +1750,9 @@ export const VisualLogicBuilder: React.FC<VisualLogicBuilderProps> = ({
           onResetTestAnswers={() => setTestAnswers({})}
           evaluation={evaluation}
           validation={validation}
+          simulatedValidation={simulatedValidation}
+          liveScoring={liveScoring}
+          liveOutcomeResult={liveOutcomeResult}
           selectedRuleId={resolvedSelectedRule?.id || null}
           onSelectRule={(ruleId) => {
             setWorkspaceTab('rules');

@@ -2,7 +2,8 @@ import { FormComponentType } from '../../studio';
 
 export type StudioDragPayload =
   | { kind: 'new'; componentType: FormComponentType }
-  | { kind: 'existing'; componentId: string };
+  | { kind: 'existing'; componentId: string }
+  | { kind: 'reusable'; definitionId: string };
 
 export const STUDIO_DND_MIME = 'application/x-flexstore-studio';
 
@@ -20,6 +21,9 @@ export function parseDragPayload(raw: string | null | undefined): StudioDragPayl
     if (parsed?.kind === 'existing' && typeof parsed.componentId === 'string') {
       return { kind: 'existing', componentId: parsed.componentId };
     }
+    if (parsed?.kind === 'reusable' && typeof parsed.definitionId === 'string') {
+      return { kind: 'reusable', definitionId: parsed.definitionId };
+    }
   } catch {
     return null;
   }
@@ -27,5 +31,7 @@ export function parseDragPayload(raw: string | null | undefined): StudioDragPayl
 }
 
 export function getDraggedIdentifier(payload: StudioDragPayload): string {
-  return payload.kind === 'existing' ? payload.componentId : payload.componentType;
+  if (payload.kind === 'existing') return payload.componentId;
+  if (payload.kind === 'reusable') return 'reusable_instance';
+  return payload.componentType;
 }

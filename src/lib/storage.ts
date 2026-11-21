@@ -300,3 +300,69 @@ export function ensureFormSteps(form: FormSchema): import('../types/form').FormS
   }));
 }
 
+// ============================================================================
+// Creator-Scoped Reusable Component Library (Phase 3.2)
+// Enables cross-form reuse of saved reusable components across forms owned by
+// the same creator without duplicating definitions across unrelated workspaces.
+// ============================================================================
+
+const REUSABLE_COMPONENTS_KEY = 'auraform_reusable_components_v1';
+
+export function getReusableComponentLibrary(
+  ownerId?: string
+): import('../studio/document/types').ReusableComponentDefinition[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(REUSABLE_COMPONENTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const valid = parsed.filter(
+      (item): item is import('../studio/document/types').ReusableComponentDefinition =>
+        Boolean(item && typeof item === 'object' && typeof item.id === 'string' && item.slots)
+    );
+    if (!ownerId) return valid;
+    // Include components owned by this creator or workspace-local unowned components
+    return valid.filter((item) => !item.ownerId || item.ownerId === ownerId);
+  } catch (e) {
+    console.error('Error reading reusable component library:', e);
+    return [];
+  }
+}
+
+export function saveReusableComponentToLibrary(
+  definition: import('../studio/document/types').ReusableComponentDefinition
+): import('../studio/document/types').ReusableComponentDefinition[] {
+  try {
+    if (typeof localStorage === 'undefined') return [definition];
+    const all = getReusableComponentLibrary();
+    const copy = JSON.parse(JSON.stringify(definition));
+    const idx = all.findIndex((d) => d.id === definition.id);
+    if (idx >= 0) {
+      all[idx] = copy;
+    } else {
+      all.unshift(copy);
+    }
+    localStorage.setItem(REUSABLE_COMPONENTS_KEY, JSON.stringify(all));
+    return all;
+  } catch (e) {
+    console.error('Error saving reusable component:', e);
+    return getReusableComponentLibrary();
+  }
+}
+
+export function deleteReusableComponentFromLibrary(
+  definitionId: string
+): import('../studio/document/types').ReusableComponentDefinition[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const all = getReusableComponentLibrary().filter((d) => d.id !== definitionId);
+    localStorage.setItem(REUSABLE_COMPONENTS_KEY, JSON.stringify(all));
+    return all;
+  } catch (e) {
+    console.error('Error deleting reusable component:', e);
+    return getReusableComponentLibrary();
+  }
+}
+
+

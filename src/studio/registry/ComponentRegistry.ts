@@ -74,12 +74,13 @@ export class ComponentRegistry {
   }
 
   listInsertable(): FormComponentDefinition[] {
-    return this.list().filter((def) => !def.specialAction);
+    return this.list().filter((def) => !def.specialAction && !def.hiddenFromPalette);
   }
 
   listByCategory(searchQuery = ''): ComponentCategoryGroup[] {
     const q = searchQuery.trim().toLowerCase();
     const all = this.list().filter((def) => {
+      if (def.hiddenFromPalette) return false;
       if (!q) return true;
       return (
         def.displayName.toLowerCase().includes(q) ||

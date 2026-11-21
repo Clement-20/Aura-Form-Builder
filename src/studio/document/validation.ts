@@ -4,10 +4,14 @@
  */
 
 import {
+  COMPONENT_LIBRARY_SCHEMA_VERSION,
+  CUSTOM_CODE_SCHEMA_VERSION,
   DOCUMENT_SCHEMA_VERSION,
   FormComponentNode,
+  FormCustomCodeConfig,
   FormDocument,
   FormPage,
+  ReusableComponentDefinition,
 } from './types';
 
 export interface DocumentValidationError {
@@ -212,6 +216,11 @@ export function repairFormDocument(doc: FormDocument): FormDocument {
         : { width: 'full' },
       behaviour: isRecord(rawNode.behaviour) ? { ...rawNode.behaviour } : {},
       validation: isRecord(rawNode.validation) ? { ...rawNode.validation } : {},
+      ...(isRecord(rawNode.reusableInstance)
+        ? {
+            reusableInstance: JSON.parse(JSON.stringify(rawNode.reusableInstance)),
+          }
+        : {}),
     };
 
     if (!parentId && !referencedInPages.has(nodeId)) {
@@ -255,6 +264,46 @@ export function repairFormDocument(doc: FormDocument): FormDocument {
     variables: Array.isArray(doc.variables) ? doc.variables : [],
     scoring: isRecord(doc.scoring) ? doc.scoring : undefined,
     outcomes: isRecord(doc.outcomes) ? doc.outcomes : undefined,
+    customCode: isRecord(doc.customCode)
+      ? ({
+          schemaVersion: CUSTOM_CODE_SCHEMA_VERSION,
+          css: {
+            enabled: Boolean(isRecord(doc.customCode.css) && doc.customCode.css.enabled),
+            code:
+              isRecord(doc.customCode.css) && typeof doc.customCode.css.code === 'string'
+                ? doc.customCode.css.code
+                : '',
+          },
+          js: {
+            enabled: Boolean(isRecord(doc.customCode.js) && doc.customCode.js.enabled),
+            code:
+              isRecord(doc.customCode.js) && typeof doc.customCode.js.code === 'string'
+                ? doc.customCode.js.code
+                : '',
+            timeoutMs:
+              isRecord(doc.customCode.js) && typeof doc.customCode.js.timeoutMs === 'number'
+                ? doc.customCode.js.timeoutMs
+                : undefined,
+          },
+          updatedAt:
+            typeof doc.customCode.updatedAt === 'string' ? doc.customCode.updatedAt : undefined,
+        } satisfies FormCustomCodeConfig)
+      : undefined,
+    componentDefinitions: isRecord(doc.componentDefinitions)
+      ? Object.entries(doc.componentDefinitions).reduce<Record<string, ReusableComponentDefinition>>(
+          (acc, [defId, defVal]) => {
+            if (isRecord(defVal) && typeof defVal.id === 'string' && isRecord(defVal.slots)) {
+              acc[defId] = {
+                ...(JSON.parse(JSON.stringify(defVal)) as ReusableComponentDefinition),
+                schemaVersion: COMPONENT_LIBRARY_SCHEMA_VERSION,
+                version: typeof defVal.version === 'number' && defVal.version >= 1 ? defVal.version : 1,
+              };
+            }
+            return acc;
+          },
+          {}
+        )
+      : undefined,
     integrations: isRecord(doc.integrations) ? doc.integrations : {},
     metadata: {
       createdAt: doc.metadata?.createdAt || new Date().toISOString(),

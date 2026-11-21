@@ -20,12 +20,15 @@ import {
   CrossFieldValidationRule,
   FormComponentNode,
   FormComponentType,
+  FormCustomCodeConfig,
   FormDesignConfig,
   FormDocument,
   FormOutcomeConfig,
   FormPage,
   FormScoringConfig,
   FormVariableDefinition,
+  ReusableComponentDefinition,
+  ReusableSlotOverride,
 } from '../document/types';
 import { AnyLogicRule, LogicValidationReport } from '../logic/types';
 import { validateFormLogic } from './logic-engine';
@@ -48,35 +51,46 @@ import {
   addComponent,
   AddComponentOptions,
   canNestComponent,
+  clearReusableInstancePropOverride,
   createPage,
   deletePage,
+  detachReusableInstance,
   duplicateComponent,
   duplicatePage,
   getOrderedComponents,
   getPageByIndex,
+  insertReusableComponentInstance,
   moveComponent,
   moveComponentByOffset,
   MoveComponentDestination,
   moveComponentToPage,
   NestingValidationResult,
   removeComponent,
+  removeReusableDefinitionFromDoc,
   reorderComponent,
   reorderPage,
   resetComponentAppearance,
   resetDesignToDefault,
+  resetReusableInstanceOverrides,
   splitPageAfterComponent,
+  syncAllReusableInstancesForDefinition,
+  syncReusableInstance,
   updateComponent,
   updateCrossFieldValidations,
+  updateCustomCode,
   updateDesign,
   updateFormMeta,
   updateGlobalSettings,
   updateLogicRules,
   updateOutcomesConfig,
   updatePage,
+  updateReusableInstancePropOverride,
+  updateReusableInstanceSlotOverride,
   updateScoringConfig,
   updateThankYouScreen,
   updateVariables,
   updateWelcomeScreen,
+  upsertReusableDefinitionInDoc,
 } from './document-engine';
 import { ComponentRegistry } from '../registry/ComponentRegistry';
 import { formComponentRegistry } from '../registry/builtin-components';
@@ -187,8 +201,44 @@ export interface FormStudioController {
   updateCrossFieldValidations: (rules: CrossFieldValidationRule[]) => void;
   updateScoringConfig: (scoring: FormScoringConfig) => void;
   updateOutcomesConfig: (outcomes: FormOutcomeConfig) => void;
+  updateCustomCode: (customCode: FormCustomCodeConfig) => void;
   updateVariables: (variables: FormVariableDefinition[]) => void;
   renameVariable: (variableId: string, nextName: string) => { error?: string };
+
+  // Reusable component operations (Phase 3.2)
+  upsertReusableDefinition: (definition: ReusableComponentDefinition) => void;
+  removeReusableDefinition: (definitionId: string) => void;
+  insertReusableComponent: (
+    definition: ReusableComponentDefinition,
+    targetPageId?: string,
+    options?: AddComponentOptions
+  ) => string | null;
+  updateReusablePropOverride: (
+    instanceId: string,
+    propKey: string,
+    value: unknown,
+    externalDefs?: Record<string, ReusableComponentDefinition>
+  ) => { error?: string };
+  clearReusablePropOverride: (instanceId: string, propKey: string) => void;
+  updateReusableSlotOverride: (
+    instanceId: string,
+    slotId: string,
+    patch: ReusableSlotOverride
+  ) => void;
+  resetReusableOverrides: (instanceId: string, slotId?: string) => void;
+  syncReusableInstance: (
+    instanceId: string,
+    latestDefinition: ReusableComponentDefinition,
+    options?: { preserveOverrides: boolean }
+  ) => void;
+  syncAllReusableInstances: (
+    latestDefinition: ReusableComponentDefinition,
+    options?: { preserveOverrides: boolean }
+  ) => void;
+  detachReusableInstance: (
+    instanceId: string,
+    externalDefs?: Record<string, ReusableComponentDefinition>
+  ) => void;
 
   // Sync / external replacement
   applyRemoteFormSnapshot: (remoteForm: FormSchema | FormDocument) => void;
@@ -732,6 +782,16 @@ export function useFormStudio(
     [commit]
   );
 
+  const handleUpdateCustomCode = useCallback(
+    (customCode: FormCustomCodeConfig) => {
+      commit((cur) => updateCustomCode(cur, customCode), {
+        action: 'custom_code_updated',
+        summary: 'Updated custom code & styling',
+      });
+    },
+    [commit]
+  );
+
   const handleUpdateVariables = useCallback(
     (variables: FormVariableDefinition[]) => {
       commit((cur) => updateVariables(cur, variables), {
@@ -760,6 +820,150 @@ export function useFormStudio(
       return {};
     },
     [readOnly, document, commit]
+  );
+
+  // Reusable component callbacks
+  const handleUpsertReusableDefinition = useCallback(
+    (definition: ReusableComponentDefinition) => {
+      commit((cur) => upsertReusableDefinitionInDoc(cur, definition), {
+        action: 'reusable_def_saved',
+        summary: `Saved reusable component "${definition.name}" (v${definition.version})`,
+      });
+    },
+    [commit]
+  );
+
+  const handleRemoveReusableDefinition = useCallback(
+    (definitionId: string) => {
+      commit((cur) => removeReusableDefinitionFromDoc(cur, definitionId), {
+        action: 'reusable_def_removed',
+        summary: 'Removed reusable component definition from form',
+      });
+    },
+    [commit]
+  );
+
+  const handleInsertReusableComponent = useCallback(
+    (
+      definition: ReusableComponentDefinition,
+      targetPageId?: string,
+      addOptions?: AddComponentOptions
+    ): string | null => {
+      if (readOnly) return null;
+      const pageId =
+        targetPageId || (!viewAllPages ? resolvedActivePage?.id : document.pages[0]?.id);
+      let createdId: string | null = null;
+
+      setHistory((prev) => {
+        const result = insertReusableComponentInstance(
+          prev.present,
+          definition,
+          pageId,
+          addOptions,
+          registry
+        );
+        createdId = result.componentId;
+        if (onLocalMutation) {
+          onLocalMutation(result.doc, {
+            action: 'reusable_inserted',
+            summary: `Inserted reusable component "${definition.name}"`,
+          });
+        }
+        return pushHistory(prev, result.doc);
+      });
+
+      if (createdId) {
+        setSelection({ kind: 'component', id: createdId });
+      }
+      return createdId;
+    },
+    [readOnly, viewAllPages, resolvedActivePage?.id, document.pages, registry, onLocalMutation]
+  );
+
+  const handleUpdateReusablePropOverride = useCallback(
+    (
+      instanceId: string,
+      propKey: string,
+      value: unknown,
+      externalDefs?: Record<string, ReusableComponentDefinition>
+    ): { error?: string } => {
+      if (readOnly) return { error: 'Form is read-only.' };
+      const preview = updateReusableInstancePropOverride(
+        document,
+        instanceId,
+        propKey,
+        value,
+        externalDefs
+      );
+      if (preview.error) return { error: preview.error };
+      commit((cur) => updateReusableInstancePropOverride(cur, instanceId, propKey, value, externalDefs).doc);
+      return {};
+    },
+    [readOnly, document, commit]
+  );
+
+  const handleClearReusablePropOverride = useCallback(
+    (instanceId: string, propKey: string) => {
+      commit((cur) => clearReusableInstancePropOverride(cur, instanceId, propKey));
+    },
+    [commit]
+  );
+
+  const handleUpdateReusableSlotOverride = useCallback(
+    (instanceId: string, slotId: string, patch: ReusableSlotOverride) => {
+      commit((cur) => updateReusableInstanceSlotOverride(cur, instanceId, slotId, patch));
+    },
+    [commit]
+  );
+
+  const handleResetReusableOverrides = useCallback(
+    (instanceId: string, slotId?: string) => {
+      commit((cur) => resetReusableInstanceOverrides(cur, instanceId, slotId), {
+        action: 'reusable_overrides_reset',
+        summary: slotId ? 'Reset slot override on component instance' : 'Reset all local overrides on component instance',
+      });
+    },
+    [commit]
+  );
+
+  const handleSyncReusableInstance = useCallback(
+    (
+      instanceId: string,
+      latestDefinition: ReusableComponentDefinition,
+      syncOpts: { preserveOverrides: boolean } = { preserveOverrides: true }
+    ) => {
+      commit((cur) => syncReusableInstance(cur, instanceId, latestDefinition, syncOpts), {
+        action: 'reusable_instance_synced',
+        summary: `Updated "${latestDefinition.name}" instance to v${latestDefinition.version}`,
+      });
+    },
+    [commit]
+  );
+
+  const handleSyncAllReusableInstances = useCallback(
+    (
+      latestDefinition: ReusableComponentDefinition,
+      syncOpts: { preserveOverrides: boolean } = { preserveOverrides: true }
+    ) => {
+      commit((cur) => syncAllReusableInstancesForDefinition(cur, latestDefinition, syncOpts), {
+        action: 'reusable_instances_synced',
+        summary: `Updated all linked "${latestDefinition.name}" instances to v${latestDefinition.version}`,
+      });
+    },
+    [commit]
+  );
+
+  const handleDetachReusableInstance = useCallback(
+    (
+      instanceId: string,
+      externalDefs?: Record<string, ReusableComponentDefinition>
+    ) => {
+      commit((cur) => detachReusableInstance(cur, instanceId, externalDefs), {
+        action: 'reusable_instance_detached',
+        summary: 'Detached component instance from master definition',
+      });
+    },
+    [commit]
   );
 
   const applyRemoteFormSnapshot = useCallback((remoteForm: FormSchema | FormDocument) => {
@@ -862,8 +1066,20 @@ export function useFormStudio(
     updateCrossFieldValidations: handleUpdateCrossFieldValidations,
     updateScoringConfig: handleUpdateScoringConfig,
     updateOutcomesConfig: handleUpdateOutcomesConfig,
+    updateCustomCode: handleUpdateCustomCode,
     updateVariables: handleUpdateVariables,
     renameVariable: handleRenameVariable,
+
+    upsertReusableDefinition: handleUpsertReusableDefinition,
+    removeReusableDefinition: handleRemoveReusableDefinition,
+    insertReusableComponent: handleInsertReusableComponent,
+    updateReusablePropOverride: handleUpdateReusablePropOverride,
+    clearReusablePropOverride: handleClearReusablePropOverride,
+    updateReusableSlotOverride: handleUpdateReusableSlotOverride,
+    resetReusableOverrides: handleResetReusableOverrides,
+    syncReusableInstance: handleSyncReusableInstance,
+    syncAllReusableInstances: handleSyncAllReusableInstances,
+    detachReusableInstance: handleDetachReusableInstance,
 
     applyRemoteFormSnapshot,
     replaceDocument,

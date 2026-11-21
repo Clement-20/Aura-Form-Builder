@@ -149,23 +149,45 @@ export function resolvePipedText(
   );
 }
 
+function escapeHtmlForPiping(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Produces a shallow-cloned component node whose display text slots (`label`, `body`,
- * `helpText`, `placeholder`, `mediaCaption`) have been safely piped into plain text.
+ * `helpText`, `placeholder`, `mediaCaption`, and optionally HTML-escaped `htmlContent`)
+ * have been safely piped.
  */
 export function pipeComponentNode(
   node: FormComponentNode,
   context: PipingContext
 ): FormComponentNode {
   const c = node.content;
+  const shouldPipeHtml = Boolean(c.htmlEnablePiping && c.htmlContent && c.htmlContent.includes('{{'));
   const needsPiping =
     (c.label && c.label.includes('{{')) ||
     (c.body && c.body.includes('{{')) ||
     (c.helpText && c.helpText.includes('{{')) ||
     (c.placeholder && c.placeholder.includes('{{')) ||
-    (c.mediaCaption && c.mediaCaption.includes('{{'));
+    (c.mediaCaption && c.mediaCaption.includes('{{')) ||
+    shouldPipeHtml;
 
   if (!needsPiping) return node;
+
+  let pipedHtml = c.htmlContent;
+  if (shouldPipeHtml && c.htmlContent) {
+    // Pipe each {{token}} individually and HTML-escape the resolved respondent value
+    // so respondent input can never inject HTML tags or attributes into Custom HTML blocks.
+    pipedHtml = c.htmlContent.replace(/\{\{([^{}]+)\}\}/g, (fullMatch) => {
+      const resolved = resolvePipedText(fullMatch, context);
+      return escapeHtmlForPiping(resolved);
+    });
+  }
 
   return {
     ...node,
@@ -178,6 +200,7 @@ export function pipeComponentNode(
         c.placeholder !== undefined ? resolvePipedText(c.placeholder, context) : undefined,
       mediaCaption:
         c.mediaCaption !== undefined ? resolvePipedText(c.mediaCaption, context) : undefined,
+      htmlContent: pipedHtml,
     },
   };
 }
@@ -219,6 +242,7 @@ export function buildPipingCatalog(
     'thank_you_screen',
     'progress_indicator',
     'statement',
+    'custom_html',
   ]);
 
   const questions: PipingCatalogItem[] = [];

@@ -23,6 +23,14 @@ import {
   DeviceMobile,
   EyeSlash,
   Palette,
+  WarningCircle,
+  Code,
+  ShieldCheck,
+  Cube,
+  ArrowsClockwise,
+  LinkBreak,
+  CaretDown,
+  CaretRight,
 } from '@phosphor-icons/react';
 import {
   FormLayoutMode,
@@ -33,10 +41,13 @@ import {
 } from '../../types/form';
 import {
   BreakpointKey,
+  buildReusableSlotNodeId,
   CanvasViewport,
+  compileScopedCss,
   ComponentAppearanceProps,
   ComponentNodePatch,
   ComponentWidth,
+  formatCss,
   FormComponentNode,
   FormComponentType,
   FormDesignConfig,
@@ -45,12 +56,20 @@ import {
   formComponentRegistry,
   getAllPageComponents,
   hasComponentStyleOverrides,
+  HTML_EXAMPLE_SNIPPETS,
+  isSafeReusableUrl,
   RegisteredComponentIcon,
+  resolveReusableInstance,
+  ReusableComponentDefinition,
+  ReusableSlotOverride,
+  sanitizeCustomHtml,
   SelectionTarget,
   SpacingToken,
   TextAlign,
+  isSafeRegexPattern,
 } from '../../studio';
 import { AnswerPipingPicker } from './AnswerPipingPicker';
+import { CodeHighlightEditor } from './CodeHighlightEditor';
 
 function appendPipingToken(current: string, token: string): string {
   if (!current) return token;
@@ -84,6 +103,27 @@ interface FieldInspectorProps {
   onUpdateThankYouScreen: (patch: Partial<FormThankYouScreen>) => void;
   canvasViewport?: CanvasViewport;
   onResetComponentAppearance?: (id: string) => void;
+  reusableDefinitions?: Record<string, ReusableComponentDefinition>;
+  onSaveNodeAsReusable?: (componentId: string) => void;
+  onEditReusableDefinition?: (definitionId: string) => void;
+  onUpdateReusablePropOverride?: (
+    instanceId: string,
+    propKey: string,
+    value: unknown
+  ) => { error?: string };
+  onClearReusablePropOverride?: (instanceId: string, propKey: string) => void;
+  onUpdateReusableSlotOverride?: (
+    instanceId: string,
+    slotId: string,
+    patch: ReusableSlotOverride
+  ) => void;
+  onResetReusableOverrides?: (instanceId: string, slotId?: string) => void;
+  onSyncReusableInstance?: (
+    instanceId: string,
+    definitionId: string,
+    preserveOverrides: boolean
+  ) => void;
+  onDetachReusableInstance?: (instanceId: string) => void;
   isMobileDrawer?: boolean;
   onCloseMobile?: () => void;
   isReadOnly?: boolean;
@@ -123,16 +163,32 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
   onUpdateThankYouScreen,
   canvasViewport = 'desktop',
   onResetComponentAppearance,
+  reusableDefinitions,
+  onSaveNodeAsReusable,
+  onEditReusableDefinition,
+  onUpdateReusablePropOverride,
+  onClearReusablePropOverride,
+  onUpdateReusableSlotOverride,
+  onResetReusableOverrides,
+  onSyncReusableInstance,
+  onDetachReusableInstance,
   isMobileDrawer = false,
   onCloseMobile,
   isReadOnly = false,
 }) => {
   const [componentTab, setComponentTab] = useState<'content' | 'style' | 'responsive'>('content');
   const [respDevice, setRespDevice] = useState<BreakpointKey>(canvasViewport);
+  const [propOverrideErrors, setPropOverrideErrors] = useState<Record<string, string>>({});
+  const [expandedSlotId, setExpandedSlotId] = useState<string | null>(null);
 
   useEffect(() => {
     setRespDevice(canvasViewport);
   }, [canvasViewport]);
+
+  useEffect(() => {
+    setPropOverrideErrors({});
+    setExpandedSlotId(null);
+  }, [selectedComponent?.id]);
 
   const insertableDefs = useMemo(() => formComponentRegistry.listInsertable(), []);
   const isQuizMode = document.settings.isQuizMode;
@@ -204,10 +260,20 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
               </span>
               <div className="min-w-0">
                 <span className="font-display font-semibold text-sm text-[#0B0D0F] block truncate">
-                  {def?.displayName || component.type}
+                  {component.type === 'reusable_instance'
+                    ? component.reusableInstance?.definitionNameSnapshot ||
+                      component.content.label ||
+                      'Reusable Component'
+                    : def?.displayName || component.type}
                 </span>
                 <span className="text-[10px] font-mono uppercase tracking-wider text-[#5C6066]">
-                  {isContainer ? 'Layout Container' : def?.isQuestion ? 'Form Field' : 'Content Block'}
+                  {component.type === 'reusable_instance'
+                    ? 'Reusable Instance'
+                    : isContainer
+                      ? 'Layout Container'
+                      : def?.isQuestion
+                        ? 'Form Field'
+                        : 'Content Block'}
                 </span>
               </div>
             </div>
@@ -215,6 +281,17 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
             <div className="flex items-center gap-1 shrink-0">
               {!isReadOnly && (
                 <>
+                  {component.type !== 'reusable_instance' && onSaveNodeAsReusable && (
+                    <button
+                      type="button"
+                      onClick={() => onSaveNodeAsReusable(component.id)}
+                      className="w-7 h-7 rounded-lg hover:bg-[#0F766E]/10 text-[#5C6066] hover:text-[#0F766E] flex items-center justify-center transition-colors"
+                      title="Save as Reusable Component"
+                      aria-label="Save as Reusable Component"
+                    >
+                      <Cube size={14} weight="regular" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => onDuplicateComponent(component.id)}
@@ -325,30 +402,562 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
               Content
             </span>
 
-            <div className="space-y-1">
-              <label className="font-semibold text-[#0B0D0F] block">Block Type</label>
-              <select
-                disabled={isReadOnly}
-                value={component.type}
-                onChange={(e) => {
-                  const nextType = e.target.value as FormComponentType;
-                  const nextDef = formComponentRegistry.get(nextType);
-                  onUpdateComponent(component.id, {
-                    type: nextType,
-                    ...(nextDef?.isContainer
-                      ? { layout: { columns: nextDef.defaultLayout.columns || 1 } }
-                      : {}),
+            {component.type !== 'reusable_instance' && (
+              <div className="space-y-1">
+                <label className="font-semibold text-[#0B0D0F] block">Block Type</label>
+                <select
+                  disabled={isReadOnly}
+                  value={component.type}
+                  onChange={(e) => {
+                    const nextType = e.target.value as FormComponentType;
+                    const nextDef = formComponentRegistry.get(nextType);
+                    onUpdateComponent(component.id, {
+                      type: nextType,
+                      ...(nextDef?.isContainer
+                        ? { layout: { columns: nextDef.defaultLayout.columns || 1 } }
+                        : {}),
+                    });
+                  }}
+                  className="w-full px-3 py-2 rounded-lg bg-[#F7F6F3] focus:bg-white border border-black/[0.08] text-xs font-medium focus:border-[#0F766E] focus:outline-none disabled:opacity-60"
+                >
+                  {compatibleDefs.map((item) => (
+                    <option key={item.type} value={item.type}>
+                      {item.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* REUSABLE INSTANCE INSPECTOR: Status, Explicit Sync, Exposed Props & Per-Slot Overrides */}
+            {component.type === 'reusable_instance' &&
+              (() => {
+                const defsMap = reusableDefinitions || document.componentDefinitions;
+                const resolved = resolveReusableInstance(component, defsMap, canvasViewport);
+                const instCfg = component.reusableInstance;
+                const activeDef = resolved.definition;
+
+                const handlePropChange = (propKey: string, val: unknown) => {
+                  if (!onUpdateReusablePropOverride) return;
+                  const result = onUpdateReusablePropOverride(component.id, propKey, val);
+                  setPropOverrideErrors((prev) => {
+                    const next = { ...prev };
+                    if (result?.error) {
+                      next[propKey] = result.error;
+                    } else {
+                      delete next[propKey];
+                    }
+                    return next;
                   });
-                }}
-                className="w-full px-3 py-2 rounded-lg bg-[#F7F6F3] focus:bg-white border border-black/[0.08] text-xs font-medium focus:border-[#0F766E] focus:outline-none disabled:opacity-60"
-              >
-                {compatibleDefs.map((item) => (
-                  <option key={item.type} value={item.type}>
-                    {item.displayName}
-                  </option>
-                ))}
-              </select>
-            </div>
+                };
+
+                return (
+                  <div className="space-y-4">
+                    {/* Instance Status Card */}
+                    <div className="p-3 rounded-xl bg-[#FAF9F7] border border-black/[0.08] space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-xs font-semibold text-[#0B0D0F] block truncate">
+                            {resolved.definitionName ||
+                              activeDef?.name ||
+                              instCfg?.definitionNameSnapshot ||
+                              'Reusable Component'}
+                          </span>
+                          <span className="font-mono text-[10px] text-[#5C6066] block mt-0.5">
+                            {activeDef?.category || 'Custom'} · v{resolved.activeVersion}
+                          </span>
+                        </div>
+                        <span
+                          className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-semibold uppercase shrink-0 ${
+                            resolved.status === 'up_to_date'
+                              ? 'bg-[#0F766E]/10 text-[#0F766E]'
+                              : resolved.status === 'update_available'
+                                ? 'bg-amber-100 text-amber-900'
+                                : resolved.status === 'detached'
+                                  ? 'bg-black/[0.07] text-[#5C6066]'
+                                  : 'bg-rose-50 text-rose-700'
+                          }`}
+                        >
+                          {resolved.status === 'up_to_date'
+                            ? 'Linked'
+                            : resolved.status === 'update_available'
+                              ? `v${resolved.latestVersion} Ready`
+                              : resolved.status === 'detached'
+                                ? 'Detached'
+                                : activeDef
+                                  ? 'Snapshot'
+                                  : 'Unavailable'}
+                        </span>
+                      </div>
+
+                      {resolved.status === 'update_available' &&
+                        activeDef &&
+                        !isReadOnly &&
+                        onSyncReusableInstance && (
+                          <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-300/70 space-y-2">
+                            <p className="text-[11px] text-amber-950 leading-snug">
+                              Master definition updated to <strong>v{resolved.latestVersion}</strong>.
+                              Your local customisations remain untouched until you choose to update.
+                            </p>
+                            <div className="flex flex-col gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onSyncReusableInstance(component.id, activeDef.id, true)
+                                }
+                                className="w-full py-1.5 px-2.5 rounded-lg bg-[#0F766E] hover:bg-[#0D665F] text-white text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                              >
+                                <ArrowsClockwise size={12} weight="bold" />
+                                <span>Update (Keep Customisations)</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onSyncReusableInstance(component.id, activeDef.id, false)
+                                }
+                                className="w-full py-1.5 px-2.5 rounded-lg bg-white hover:bg-amber-100 text-amber-950 border border-amber-300 text-[11px] font-semibold transition-colors"
+                              >
+                                Reset &amp; Update to v{resolved.latestVersion}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                      {resolved.status === 'missing_definition' && (
+                        <p className="text-[11px] text-[#5C6066] leading-snug">
+                          {activeDef
+                            ? 'The original library definition was removed. This instance safely renders from its embedded snapshot.'
+                            : 'This reusable component definition is no longer available.'}
+                        </p>
+                      )}
+
+                      {!isReadOnly && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          {activeDef &&
+                            resolved.status !== 'detached' &&
+                            resolved.status !== 'missing_definition' &&
+                            onEditReusableDefinition && (
+                              <button
+                                type="button"
+                                onClick={() => onEditReusableDefinition(activeDef.id)}
+                                className="flex-1 py-1.5 px-2.5 rounded-lg bg-white hover:bg-[#0B0D0F] text-[#0B0D0F] hover:text-white border border-black/[0.1] text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors"
+                              >
+                                <Cube size={12} weight="duotone" />
+                                <span>Edit Master</span>
+                              </button>
+                            )}
+                          {(resolved.status === 'up_to_date' ||
+                            resolved.status === 'update_available') &&
+                            onDetachReusableInstance && (
+                              <button
+                                type="button"
+                                onClick={() => onDetachReusableInstance(component.id)}
+                                className="py-1.5 px-2.5 rounded-lg bg-white hover:bg-black/[0.05] text-[#5C6066] hover:text-[#0B0D0F] border border-black/[0.1] text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                                title="Detach from future master definition updates"
+                              >
+                                <LinkBreak size={12} weight="bold" />
+                                <span>Detach</span>
+                              </button>
+                            )}
+                          {resolved.hasLocalOverrides && onResetReusableOverrides && (
+                            <button
+                              type="button"
+                              onClick={() => onResetReusableOverrides(component.id)}
+                              className="w-full py-1.5 px-2.5 rounded-lg bg-white hover:bg-rose-50 text-[#5C6066] hover:text-rose-700 border border-black/[0.08] text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors"
+                            >
+                              <ArrowCounterClockwise size={12} weight="bold" />
+                              <span>Reset All Instance Overrides</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Typed Exposed Properties (Instance-Scoped) */}
+                    {activeDef && activeDef.props.length > 0 && (
+                      <div className="space-y-3 pt-2 border-t border-black/[0.07]">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066]">
+                            Instance Properties
+                          </span>
+                          <span className="text-[10px] text-[#5C6066]">This instance only</span>
+                        </div>
+
+                        {activeDef.props.map((prop) => {
+                          const hasOverride =
+                            instCfg?.propOverrides !== undefined &&
+                            Object.prototype.hasOwnProperty.call(
+                              instCfg.propOverrides,
+                              prop.key
+                            );
+                          const currentVal =
+                            resolved.effectivePropValues[prop.key] ?? prop.defaultValue;
+                          const errMsg = propOverrideErrors[prop.key];
+
+                          return (
+                            <div key={prop.key} className="space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="font-semibold text-[#0B0D0F] flex items-center gap-1.5">
+                                  <span>{prop.label}</span>
+                                  {hasOverride && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#0F766E]" />
+                                  )}
+                                </label>
+                                {hasOverride && !isReadOnly && onClearReusablePropOverride && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onClearReusablePropOverride(component.id, prop.key);
+                                      setPropOverrideErrors((prev) => {
+                                        const next = { ...prev };
+                                        delete next[prop.key];
+                                        return next;
+                                      });
+                                    }}
+                                    className="text-[10px] font-semibold text-[#5C6066] hover:text-[#0F766E]"
+                                  >
+                                    Reset
+                                  </button>
+                                )}
+                              </div>
+
+                              {prop.type === 'textarea' ? (
+                                <textarea
+                                  rows={3}
+                                  disabled={isReadOnly}
+                                  value={String(currentVal ?? '')}
+                                  onChange={(e) => handlePropChange(prop.key, e.target.value)}
+                                  className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs disabled:opacity-60"
+                                />
+                              ) : prop.type === 'color' ? (
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    disabled={isReadOnly}
+                                    value={
+                                      /^#[0-9a-fA-F]{6}$/.test(String(currentVal || ''))
+                                        ? String(currentVal)
+                                        : '#0F766E'
+                                    }
+                                    onChange={(e) => handlePropChange(prop.key, e.target.value)}
+                                    className="w-8 h-8 rounded border border-black/[0.1] cursor-pointer"
+                                  />
+                                  <input
+                                    type="text"
+                                    disabled={isReadOnly}
+                                    value={String(currentVal ?? '')}
+                                    onChange={(e) => handlePropChange(prop.key, e.target.value)}
+                                    placeholder="#0F766E"
+                                    className="flex-1 px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] font-mono text-xs focus:outline-none"
+                                  />
+                                </div>
+                              ) : prop.type === 'alignment' ? (
+                                <div className="grid grid-cols-3 gap-1">
+                                  {(['left', 'center', 'right'] as const).map((al) => (
+                                    <button
+                                      key={al}
+                                      type="button"
+                                      disabled={isReadOnly}
+                                      onClick={() => handlePropChange(prop.key, al)}
+                                      className={`py-1.5 rounded-lg text-[11px] font-semibold capitalize transition-colors ${
+                                        currentVal === al
+                                          ? 'bg-[#0B0D0F] text-white'
+                                          : 'bg-[#F7F6F3] text-[#5C6066] hover:text-[#0B0D0F]'
+                                      }`}
+                                    >
+                                      {al}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : prop.type === 'spacing' ? (
+                                <div className="grid grid-cols-3 gap-1">
+                                  {(['sm', 'md', 'lg'] as const).map((sp) => (
+                                    <button
+                                      key={sp}
+                                      type="button"
+                                      disabled={isReadOnly}
+                                      onClick={() => handlePropChange(prop.key, sp)}
+                                      className={`py-1.5 rounded-lg text-[11px] font-mono uppercase font-semibold transition-colors ${
+                                        currentVal === sp
+                                          ? 'bg-[#0B0D0F] text-white'
+                                          : 'bg-[#F7F6F3] text-[#5C6066] hover:text-[#0B0D0F]'
+                                      }`}
+                                    >
+                                      {sp}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : prop.type === 'layout_columns' ? (
+                                <div className="grid grid-cols-3 gap-1">
+                                  {([1, 2, 3] as const).map((cols) => (
+                                    <button
+                                      key={cols}
+                                      type="button"
+                                      disabled={isReadOnly}
+                                      onClick={() => handlePropChange(prop.key, cols)}
+                                      className={`py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                                        Number(currentVal) === cols
+                                          ? 'bg-[#0B0D0F] text-white'
+                                          : 'bg-[#F7F6F3] text-[#5C6066] hover:text-[#0B0D0F]'
+                                      }`}
+                                    >
+                                      {cols} {cols === 1 ? 'Col' : 'Cols'}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : prop.type === 'visibility' ? (
+                                <button
+                                  type="button"
+                                  disabled={isReadOnly}
+                                  onClick={() => handlePropChange(prop.key, !Boolean(currentVal))}
+                                  className={`w-full px-3 py-2 rounded-lg border text-xs font-semibold flex items-center justify-between transition-colors ${
+                                    Boolean(currentVal)
+                                      ? 'bg-[#0F766E]/10 border-[#0F766E]/40 text-[#0F766E]'
+                                      : 'bg-[#F7F6F3] border-black/[0.08] text-[#5C6066]'
+                                  }`}
+                                >
+                                  <span>{Boolean(currentVal) ? 'Visible' : 'Hidden'}</span>
+                                  <span className="font-mono text-[10px] uppercase">
+                                    {Boolean(currentVal) ? 'ON' : 'OFF'}
+                                  </span>
+                                </button>
+                              ) : (
+                                <input
+                                  type={
+                                    prop.type === 'url' || prop.type === 'image_url'
+                                      ? 'url'
+                                      : 'text'
+                                  }
+                                  disabled={isReadOnly}
+                                  value={String(currentVal ?? '')}
+                                  onChange={(e) => handlePropChange(prop.key, e.target.value)}
+                                  placeholder={
+                                    prop.type === 'url' || prop.type === 'image_url'
+                                      ? 'https://...'
+                                      : `Enter ${prop.label.toLowerCase()}...`
+                                  }
+                                  className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs disabled:opacity-60"
+                                />
+                              )}
+
+                              {prop.description && (
+                                <p className="text-[10px] text-[#5C6066]">{prop.description}</p>
+                              )}
+                              {errMsg && (
+                                <p className="text-[10px] text-rose-600 flex items-center gap-1">
+                                  <WarningCircle size={12} weight="bold" />
+                                  <span>{errMsg}</span>
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Per-Slot Local Overrides */}
+                    {activeDef &&
+                      Object.keys(activeDef.slots).length > 0 &&
+                      onUpdateReusableSlotOverride && (
+                        <div className="space-y-2 pt-2 border-t border-black/[0.07]">
+                          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] block">
+                            Internal Block Overrides
+                          </span>
+                          <div className="space-y-1.5">
+                            {Object.values(activeDef.slots).map((slot) => {
+                              const slotDef = formComponentRegistry.get(slot.type);
+                              const slotOverride = instCfg?.slotOverrides?.[slot.slotId];
+                              const hasSlotOverride = Boolean(
+                                slotOverride &&
+                                  (slotOverride.hidden !== undefined ||
+                                    (slotOverride.content &&
+                                      Object.keys(slotOverride.content).length > 0) ||
+                                    (slotOverride.appearance &&
+                                      Object.keys(slotOverride.appearance).length > 0))
+                              );
+                              const isOpen = expandedSlotId === slot.slotId;
+                              const resolvedNode =
+                                resolved.nodesById[buildReusableSlotNodeId(component.id, slot.slotId)];
+
+                            return (
+                              <div
+                                key={slot.slotId}
+                                className="rounded-lg border border-black/[0.08] bg-white overflow-hidden"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedSlotId(isOpen ? null : slot.slotId)
+                                  }
+                                  className="w-full px-2.5 py-2 flex items-center justify-between gap-2 text-left hover:bg-[#FAF9F7] transition-colors"
+                                >
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <RegisteredComponentIcon
+                                      type={slot.type}
+                                      size={13}
+                                      className="text-[#0F766E] shrink-0"
+                                    />
+                                    <span className="text-[11px] font-semibold text-[#0B0D0F] truncate">
+                                      {resolvedNode?.content.label ||
+                                        slot.content.label ||
+                                        slotDef?.shortLabel ||
+                                        slot.type}
+                                    </span>
+                                    {hasSlotOverride && (
+                                      <span className="w-1.5 h-1.5 rounded-full bg-[#0F766E] shrink-0" />
+                                    )}
+                                  </div>
+                                  <span className="text-[#5C6066]">
+                                    {isOpen ? (
+                                      <CaretDown size={12} weight="bold" />
+                                    ) : (
+                                      <CaretRight size={12} weight="bold" />
+                                    )}
+                                  </span>
+                                </button>
+
+                                {isOpen && (
+                                  <div className="p-2.5 pt-2 border-t border-black/[0.06] bg-[#FAF9F7]/60 space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-[11px] font-medium text-[#0B0D0F] flex items-center gap-1.5 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          disabled={isReadOnly}
+                                          checked={!slotOverride?.hidden}
+                                          onChange={(e) =>
+                                            onUpdateReusableSlotOverride(
+                                              component.id,
+                                              slot.slotId,
+                                              { hidden: !e.target.checked }
+                                            )
+                                          }
+                                          className="accent-[#0F766E]"
+                                        />
+                                        <span>Show block in this instance</span>
+                                      </label>
+                                      {hasSlotOverride && !isReadOnly && onResetReusableOverrides && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            onResetReusableOverrides(component.id, slot.slotId)
+                                          }
+                                          className="text-[10px] font-semibold text-[#0F766E] hover:underline"
+                                        >
+                                          Reset
+                                        </button>
+                                      )}
+                                    </div>
+
+                                    {(!slotDef || slotDef.supportedOptions.includes('label')) && (
+                                      <div className="space-y-1">
+                                        <label className="text-[10px] font-semibold text-[#5C6066] block">
+                                          Title / Label
+                                        </label>
+                                        <input
+                                          type="text"
+                                          disabled={isReadOnly}
+                                          value={
+                                            slotOverride?.content?.label ??
+                                            resolvedNode?.content.label ??
+                                            ''
+                                          }
+                                          onChange={(e) =>
+                                            onUpdateReusableSlotOverride(
+                                              component.id,
+                                              slot.slotId,
+                                              { content: { label: e.target.value } }
+                                            )
+                                          }
+                                          className="w-full px-2 py-1.5 rounded-md bg-white border border-black/[0.1] text-xs focus:border-[#0F766E] focus:outline-none"
+                                        />
+                                      </div>
+                                    )}
+
+                                    {slotDef?.supportedOptions.includes('body') && (
+                                      <div className="space-y-1">
+                                        <label className="text-[10px] font-semibold text-[#5C6066] block">
+                                          Body Copy
+                                        </label>
+                                        <textarea
+                                          rows={2}
+                                          disabled={isReadOnly}
+                                          value={
+                                            slotOverride?.content?.body ??
+                                            resolvedNode?.content.body ??
+                                            ''
+                                          }
+                                          onChange={(e) =>
+                                            onUpdateReusableSlotOverride(
+                                              component.id,
+                                              slot.slotId,
+                                              { content: { body: e.target.value } }
+                                            )
+                                          }
+                                          className="w-full px-2 py-1.5 rounded-md bg-white border border-black/[0.1] text-xs focus:border-[#0F766E] focus:outline-none"
+                                        />
+                                      </div>
+                                    )}
+
+                                    {slotDef?.supportedOptions.includes('media') && (
+                                      <div className="space-y-1">
+                                        <label className="text-[10px] font-semibold text-[#5C6066] block">
+                                          Image URL
+                                        </label>
+                                        <input
+                                          type="url"
+                                          disabled={isReadOnly}
+                                          value={
+                                            slotOverride?.content?.mediaUrl ??
+                                            resolvedNode?.content.mediaUrl ??
+                                            ''
+                                          }
+                                          onChange={(e) =>
+                                            onUpdateReusableSlotOverride(
+                                              component.id,
+                                              slot.slotId,
+                                              { content: { mediaUrl: e.target.value } }
+                                            )
+                                          }
+                                          className="w-full px-2 py-1.5 rounded-md bg-white border border-black/[0.1] text-xs focus:border-[#0F766E] focus:outline-none"
+                                        />
+                                      </div>
+                                    )}
+
+                                    {slotDef?.supportedOptions.includes('buttonLink') && (
+                                      <div className="space-y-1">
+                                        <label className="text-[10px] font-semibold text-[#5C6066] block">
+                                          Link URL
+                                        </label>
+                                        <input
+                                          type="url"
+                                          disabled={isReadOnly}
+                                          value={
+                                            slotOverride?.content?.buttonUrl ??
+                                            resolvedNode?.content.buttonUrl ??
+                                            ''
+                                          }
+                                          onChange={(e) =>
+                                            onUpdateReusableSlotOverride(
+                                              component.id,
+                                              slot.slotId,
+                                              { content: { buttonUrl: e.target.value } }
+                                            )
+                                          }
+                                          className="w-full px-2 py-1.5 rounded-md bg-white border border-black/[0.1] text-xs focus:border-[#0F766E] focus:outline-none"
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
             {supports('label') && (
               <div className="space-y-1">
@@ -484,6 +1093,117 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
               </div>
             )}
 
+            {supports('customHtml') && (() => {
+              const rawHtml = component.content.htmlContent || '';
+              const sanitizedResult = sanitizeCustomHtml(rawHtml);
+              return (
+                <div className="space-y-2.5 pt-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-[#0B0D0F] flex items-center gap-1.5">
+                      <Code size={13} weight="bold" className="text-[#0F766E]" />
+                      <span>Custom HTML</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <AnswerPipingPicker
+                        document={document}
+                        disabled={isReadOnly}
+                        onInsertToken={(token) =>
+                          onUpdateComponent(component.id, {
+                            content: {
+                              htmlContent: `${rawHtml}${rawHtml.endsWith('\n') || !rawHtml ? '' : '\n'}${token}`,
+                              htmlEnablePiping: true,
+                            },
+                          })
+                        }
+                      />
+                      {!isReadOnly && rawHtml && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateComponent(component.id, {
+                              content: { htmlContent: '' },
+                            })
+                          }
+                          className="text-[10px] font-semibold text-[#5C6066] hover:text-rose-600 transition-colors"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <CodeHighlightEditor
+                    language="html"
+                    compact
+                    minHeight={130}
+                    maxHeight={240}
+                    disabled={isReadOnly}
+                    value={rawHtml}
+                    onChange={(next) =>
+                      onUpdateComponent(component.id, {
+                        content: { htmlContent: next },
+                      })
+                    }
+                    placeholder="<div class=&quot;notice&quot;><p>Write semantic HTML here...</p></div>"
+                    diagnostics={[...sanitizedResult.errors, ...sanitizedResult.warnings].map((d) => ({
+                      severity: d.severity,
+                      code: d.code,
+                      message: d.message,
+                      line: d.line,
+                    }))}
+                  />
+
+                  <label className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.06] cursor-pointer">
+                    <span className="text-[11px] font-medium text-[#0B0D0F]">
+                      Enable answer piping <code className="font-mono text-[10px] text-[#0F766E]">{'{{field}}'}</code>
+                    </span>
+                    <input
+                      type="checkbox"
+                      disabled={isReadOnly}
+                      checked={component.content.htmlEnablePiping !== false}
+                      onChange={(e) =>
+                        onUpdateComponent(component.id, {
+                          content: { htmlEnablePiping: e.target.checked },
+                        })
+                      }
+                      className="accent-[#0F766E] w-3.5 h-3.5 rounded"
+                    />
+                  </label>
+
+                  {!isReadOnly && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-[#5C6066] block">
+                        Starter Snippets
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {HTML_EXAMPLE_SNIPPETS.map((snippet) => (
+                          <button
+                            key={snippet.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateComponent(component.id, {
+                                content: { htmlContent: snippet.html },
+                              })
+                            }
+                            className="px-2 py-1 rounded-md bg-[#F7F6F3] hover:bg-[#EAE7E1] border border-black/[0.07] text-[10px] font-semibold text-[#0B0D0F] transition-colors"
+                          >
+                            {snippet.title}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-[10px] text-[#5C6066] leading-relaxed flex items-start gap-1.5">
+                    <ShieldCheck size={13} weight="bold" className="text-[#0F766E] shrink-0 mt-0.5" />
+                    <span>
+                      Scripts, event handlers, forms, iframes, and unsafe links are automatically removed.
+                    </span>
+                  </p>
+                </div>
+              );
+            })()}
+
             {supports('media') && (
               <div className="space-y-2.5 pt-1">
                 <div className="space-y-1">
@@ -570,6 +1290,73 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
                   placeholder="https://www.youtube.com/watch?v=..."
                   className="w-full px-3 py-2 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none disabled:opacity-60"
                 />
+              </div>
+            )}
+
+            {supports('buttonLink') && (
+              <div className="space-y-2.5 pt-1">
+                <div className="space-y-1">
+                  <label className="font-semibold text-[#0B0D0F] block">Target URL</label>
+                  <input
+                    type="url"
+                    disabled={isReadOnly}
+                    value={component.content.buttonUrl || ''}
+                    onChange={(e) =>
+                      onUpdateComponent(component.id, {
+                        content: { buttonUrl: e.target.value },
+                      })
+                    }
+                    placeholder="https://example.com"
+                    className="w-full px-3 py-2 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none disabled:opacity-60"
+                  />
+                  {component.content.buttonUrl &&
+                    !isSafeReusableUrl(component.content.buttonUrl) && (
+                      <p className="text-[10px] text-rose-600 flex items-center gap-1">
+                        <WarningCircle size={12} weight="bold" />
+                        <span>Use https://, http://, mailto:, or #anchor URLs only.</span>
+                      </p>
+                    )}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-semibold text-[#0B0D0F] block">Button Style</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['primary', 'secondary', 'outline'] as const).map((variant) => (
+                      <button
+                        key={variant}
+                        type="button"
+                        disabled={isReadOnly}
+                        onClick={() =>
+                          onUpdateComponent(component.id, {
+                            content: { buttonVariant: variant },
+                          })
+                        }
+                        className={`py-1.5 rounded-lg text-[11px] font-semibold capitalize transition-all ${
+                          (component.content.buttonVariant || 'primary') === variant
+                            ? 'bg-[#0B0D0F] text-white'
+                            : 'bg-[#F7F6F3] text-[#5C6066] hover:text-[#0B0D0F]'
+                        }`}
+                      >
+                        {variant}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.06] cursor-pointer">
+                  <span className="text-[11px] font-medium text-[#0B0D0F]">Open link in new tab</span>
+                  <input
+                    type="checkbox"
+                    disabled={isReadOnly}
+                    checked={component.content.buttonOpenInNewTab !== false}
+                    onChange={(e) =>
+                      onUpdateComponent(component.id, {
+                        content: { buttonOpenInNewTab: e.target.checked },
+                      })
+                    }
+                    className="accent-[#0F766E] w-3.5 h-3.5 rounded"
+                  />
+                </label>
               </div>
             )}
 
@@ -849,44 +1636,597 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
           </div>
 
           {/* VALIDATION */}
-          {(supports('required') || supports('minMax')) && (
-            <div className="pt-4 border-t border-black/[0.07] space-y-3">
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] block">
-                Validation
-              </span>
+          {(supports('required') || supports('minMax')) && (() => {
+            const isTextField = ['text', 'textarea', 'email', 'url', 'phone', 'time'].includes(
+              component.type
+            );
+            const isNumberField = ['number', 'rating', 'scale'].includes(component.type);
+            const isDateField = component.type === 'date';
+            const isFileField = component.type === 'file_upload';
+            const isMultiSelectField = component.type === 'checkbox';
 
-              {supports('required') && (
-                <button
-                  type="button"
-                  disabled={isReadOnly}
-                  onClick={() =>
-                    onUpdateComponent(component.id, {
-                      validation: { required: !component.validation.required },
-                    })
-                  }
-                  className={`w-full px-3 py-2.5 rounded-xl flex items-center justify-between transition-all disabled:opacity-60 border ${
-                    component.validation.required
-                      ? 'bg-[#0B0D0F] text-white border-[#0B0D0F]'
-                      : 'bg-[#F7F6F3] text-[#0B0D0F] border-black/[0.07]'
-                  }`}
-                >
-                  <span className="font-semibold text-xs">Required Field</span>
-                  <span
-                    className={`w-5 h-5 rounded-full flex items-center justify-center ${
+            const patternCheck = component.validation.pattern
+              ? isSafeRegexPattern(component.validation.pattern)
+              : { safe: true };
+            const disallowedPatternCheck = component.validation.disallowedPattern
+              ? isSafeRegexPattern(component.validation.disallowedPattern)
+              : { safe: true };
+            const patternSafe = patternCheck.safe;
+            const disallowedPatternSafe = disallowedPatternCheck.safe;
+
+            const parseCsvList = (raw: string): string[] | undefined => {
+              const items = raw
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean);
+              return items.length > 0 ? items : undefined;
+            };
+
+            return (
+              <div className="pt-4 border-t border-black/[0.07] space-y-3">
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] block">
+                  Validation
+                </span>
+
+                {supports('required') && (
+                  <button
+                    type="button"
+                    disabled={isReadOnly}
+                    onClick={() =>
+                      onUpdateComponent(component.id, {
+                        validation: { required: !component.validation.required },
+                      })
+                    }
+                    className={`w-full px-3 py-2.5 rounded-xl flex items-center justify-between transition-all disabled:opacity-60 border ${
                       component.validation.required
-                        ? 'bg-emerald-500 text-white'
-                        : 'bg-black/[0.08] text-transparent'
+                        ? 'bg-[#0B0D0F] text-white border-[#0B0D0F]'
+                        : 'bg-[#F7F6F3] text-[#0B0D0F] border-black/[0.07]'
                     }`}
                   >
-                    <Check size={11} weight="bold" />
-                  </span>
-                </button>
-              )}
+                    <span className="font-semibold text-xs">Required Field</span>
+                    <span
+                      className={`w-5 h-5 rounded-full flex items-center justify-center ${
+                        component.validation.required
+                          ? 'bg-emerald-500 text-white'
+                          : 'bg-black/[0.08] text-transparent'
+                      }`}
+                    >
+                      <Check size={11} weight="bold" />
+                    </span>
+                  </button>
+                )}
 
-              {supports('required') && component.validation.required && (
-                <div className="space-y-1">
-                  <label className="font-semibold text-[#0B0D0F] block">
-                    Custom Error Message
+                {/* TEXT VALIDATION */}
+                {isTextField && (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Min Chars
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          disabled={isReadOnly}
+                          value={component.validation.minLength ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                minLength:
+                                  e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)),
+                              },
+                            })
+                          }
+                          placeholder="0"
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Max Chars
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          disabled={isReadOnly}
+                          value={component.validation.maxLength ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                maxLength:
+                                  e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)),
+                              },
+                            })
+                          }
+                          placeholder="∞"
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Exact Len
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          disabled={isReadOnly}
+                          value={component.validation.exactLength ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                exactLength:
+                                  e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)),
+                              },
+                            })
+                          }
+                          placeholder="—"
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Allowed Pattern (Regex)
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isReadOnly}
+                        value={component.validation.pattern || ''}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: { pattern: e.target.value || undefined },
+                          })
+                        }
+                        placeholder="e.g. ^[A-Z]{2}[0-9]{4}$"
+                        className={`w-full px-2.5 py-1.5 rounded-lg bg-white border focus:outline-none text-xs font-mono disabled:opacity-60 ${
+                          patternSafe
+                            ? 'border-black/[0.1] focus:border-[#0F766E]'
+                            : 'border-rose-400 focus:border-rose-500'
+                        }`}
+                      />
+                      {!patternSafe && (
+                        <p className="text-[11px] text-rose-700 flex items-center gap-1">
+                          <WarningCircle size={12} weight="fill" className="shrink-0" />
+                          <span>Invalid or unsafe regex pattern (nested quantifiers blocked).</span>
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Disallowed Pattern (Regex)
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isReadOnly}
+                        value={component.validation.disallowedPattern || ''}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: { disallowedPattern: e.target.value || undefined },
+                          })
+                        }
+                        placeholder="e.g. (spam|test)"
+                        className={`w-full px-2.5 py-1.5 rounded-lg bg-white border focus:outline-none text-xs font-mono disabled:opacity-60 ${
+                          disallowedPatternSafe
+                            ? 'border-black/[0.1] focus:border-[#0F766E]'
+                            : 'border-rose-400 focus:border-rose-500'
+                        }`}
+                      />
+                      {!disallowedPatternSafe && (
+                        <p className="text-[11px] text-rose-700 flex items-center gap-1">
+                          <WarningCircle size={12} weight="fill" className="shrink-0" />
+                          <span>Invalid or unsafe disallowed regex pattern.</span>
+                        </p>
+                      )}
+                    </div>
+
+                    {(component.type === 'text' || component.type === 'textarea') && (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.07] text-[11px] font-medium text-[#0B0D0F] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            disabled={isReadOnly}
+                            checked={Boolean(component.validation.validateEmail)}
+                            onChange={(e) =>
+                              onUpdateComponent(component.id, {
+                                validation: { validateEmail: e.target.checked || undefined },
+                              })
+                            }
+                            className="accent-[#0F766E]"
+                          />
+                          <span>Valid email</span>
+                        </label>
+                        <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.07] text-[11px] font-medium text-[#0B0D0F] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            disabled={isReadOnly}
+                            checked={Boolean(component.validation.validateUrl)}
+                            onChange={(e) =>
+                              onUpdateComponent(component.id, {
+                                validation: { validateUrl: e.target.checked || undefined },
+                              })
+                            }
+                            className="accent-[#0F766E]"
+                          />
+                          <span>Valid URL</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* NUMBER VALIDATION */}
+                {(supports('minMax') || isNumberField) && (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Min Value
+                        </label>
+                        <input
+                          type="number"
+                          disabled={isReadOnly}
+                          value={component.validation.min ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                min: e.target.value === '' ? undefined : Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Max Value
+                        </label>
+                        <input
+                          type="number"
+                          disabled={isReadOnly}
+                          value={component.validation.max ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                max: e.target.value === '' ? undefined : Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+
+                    {isNumberField && (
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                              Exact Value
+                            </label>
+                            <input
+                              type="number"
+                              disabled={isReadOnly}
+                              value={component.validation.exactValue ?? ''}
+                              onChange={(e) =>
+                                onUpdateComponent(component.id, {
+                                  validation: {
+                                    exactValue:
+                                      e.target.value === '' ? undefined : Number(e.target.value),
+                                  },
+                                })
+                              }
+                              placeholder="Any"
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                              Max Decimals
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={10}
+                              disabled={isReadOnly || Boolean(component.validation.wholeNumberOnly)}
+                              value={component.validation.maxDecimals ?? ''}
+                              onChange={(e) =>
+                                onUpdateComponent(component.id, {
+                                  validation: {
+                                    maxDecimals:
+                                      e.target.value === ''
+                                        ? undefined
+                                        : Math.max(0, Math.min(10, Number(e.target.value))),
+                                  },
+                                })
+                              }
+                              placeholder="Any"
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                            />
+                          </div>
+                        </div>
+
+                        <label className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.07] text-xs font-medium text-[#0B0D0F] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            disabled={isReadOnly}
+                            checked={Boolean(component.validation.wholeNumberOnly)}
+                            onChange={(e) =>
+                              onUpdateComponent(component.id, {
+                                validation: {
+                                  wholeNumberOnly: e.target.checked || undefined,
+                                  ...(e.target.checked ? { maxDecimals: undefined } : {}),
+                                },
+                              })
+                            }
+                            className="accent-[#0F766E]"
+                          />
+                          <span>Whole numbers only (integers)</span>
+                        </label>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* DATE VALIDATION */}
+                {isDateField && (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Min Date
+                        </label>
+                        <input
+                          type="date"
+                          disabled={isReadOnly}
+                          value={component.validation.minDate || ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: { minDate: e.target.value || undefined },
+                            })
+                          }
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono disabled:opacity-60"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Max Date
+                        </label>
+                        <input
+                          type="date"
+                          disabled={isReadOnly}
+                          value={component.validation.maxDate || ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: { maxDate: e.target.value || undefined },
+                            })
+                          }
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.07] text-[11px] font-medium text-[#0B0D0F] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          disabled={isReadOnly}
+                          checked={Boolean(component.validation.pastDatesOnly)}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                pastDatesOnly: e.target.checked || undefined,
+                                ...(e.target.checked ? { futureDatesOnly: undefined } : {}),
+                              },
+                            })
+                          }
+                          className="accent-[#0F766E]"
+                        />
+                        <span>Past dates only</span>
+                      </label>
+                      <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.07] text-[11px] font-medium text-[#0B0D0F] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          disabled={isReadOnly}
+                          checked={Boolean(component.validation.futureDatesOnly)}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                futureDatesOnly: e.target.checked || undefined,
+                                ...(e.target.checked ? { pastDatesOnly: undefined } : {}),
+                              },
+                            })
+                          }
+                          className="accent-[#0F766E]"
+                        />
+                        <span>Future dates only</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* FILE VALIDATION */}
+                {isFileField && (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Allowed Extensions (comma-separated)
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isReadOnly}
+                        value={(component.validation.allowedExtensions || []).join(', ')}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: { allowedExtensions: parseCsvList(e.target.value) },
+                          })
+                        }
+                        placeholder="e.g. .pdf, .png, .jpg, .docx"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono disabled:opacity-60"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Allowed MIME Types (optional)
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isReadOnly}
+                        value={(component.validation.allowedMimeTypes || []).join(', ')}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: { allowedMimeTypes: parseCsvList(e.target.value) },
+                          })
+                        }
+                        placeholder="e.g. application/pdf, image/*"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono disabled:opacity-60"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Max MB
+                        </label>
+                        <input
+                          type="number"
+                          min={0.1}
+                          step={0.5}
+                          disabled={isReadOnly}
+                          value={component.validation.maxFileSizeMb ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                maxFileSizeMb:
+                                  e.target.value === '' ? undefined : Math.max(0.1, Number(e.target.value)),
+                              },
+                            })
+                          }
+                          placeholder="10"
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Min Files
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          disabled={isReadOnly}
+                          value={component.validation.minFiles ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                minFiles:
+                                  e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)),
+                              },
+                            })
+                          }
+                          placeholder="0"
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                          Max Files
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          disabled={isReadOnly}
+                          value={component.validation.maxFiles ?? ''}
+                          onChange={(e) =>
+                            onUpdateComponent(component.id, {
+                              validation: {
+                                maxFiles:
+                                  e.target.value === '' ? undefined : Math.max(1, Number(e.target.value)),
+                              },
+                            })
+                          }
+                          placeholder="1"
+                          className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* SELECTION VALIDATION (Multiple choice checkboxes) */}
+                {isMultiSelectField && (
+                  <div className="grid grid-cols-3 gap-1.5 pt-1">
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Min Picks
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        disabled={isReadOnly}
+                        value={component.validation.minSelections ?? ''}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: {
+                              minSelections:
+                                e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)),
+                            },
+                          })
+                        }
+                        placeholder="0"
+                        className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Max Picks
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        disabled={isReadOnly}
+                        value={component.validation.maxSelections ?? ''}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: {
+                              maxSelections:
+                                e.target.value === '' ? undefined : Math.max(1, Number(e.target.value)),
+                            },
+                          })
+                        }
+                        placeholder="∞"
+                        className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                        Exact Picks
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        disabled={isReadOnly}
+                        value={component.validation.exactSelections ?? ''}
+                        onChange={(e) =>
+                          onUpdateComponent(component.id, {
+                            validation: {
+                              exactSelections:
+                                e.target.value === '' ? undefined : Math.max(1, Number(e.target.value)),
+                            },
+                          })
+                        }
+                        placeholder="—"
+                        className="w-full px-2 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs font-mono tabular-nums disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* CUSTOM VALIDATION MESSAGE (always available for any question validation) */}
+                <div className="space-y-1 pt-1">
+                  <label className="font-semibold text-[11px] text-[#0B0D0F] block">
+                    Custom Validation Error Message
                   </label>
                   <input
                     type="text"
@@ -894,53 +2234,16 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
                     value={component.validation.customErrorMessage || ''}
                     onChange={(e) =>
                       onUpdateComponent(component.id, {
-                        validation: { customErrorMessage: e.target.value },
+                        validation: { customErrorMessage: e.target.value || undefined },
                       })
                     }
-                    placeholder="This field is required."
-                    className="w-full px-3 py-2 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none disabled:opacity-60"
+                    placeholder="Shown when any validation check fails..."
+                    className="w-full px-3 py-2 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none text-xs disabled:opacity-60"
                   />
                 </div>
-              )}
-
-              {supports('minMax') && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <label className="font-semibold text-[#0B0D0F] block">Min</label>
-                    <input
-                      type="number"
-                      disabled={isReadOnly}
-                      value={component.validation.min ?? ''}
-                      onChange={(e) =>
-                        onUpdateComponent(component.id, {
-                          validation: {
-                            min: e.target.value === '' ? undefined : Number(e.target.value),
-                          },
-                        })
-                      }
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="font-semibold text-[#0B0D0F] block">Max</label>
-                    <input
-                      type="number"
-                      disabled={isReadOnly}
-                      value={component.validation.max ?? ''}
-                      onChange={(e) =>
-                        onUpdateComponent(component.id, {
-                          validation: {
-                            max: e.target.value === '' ? undefined : Number(e.target.value),
-                          },
-                        })
-                      }
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-black/[0.1] focus:border-[#0F766E] focus:outline-none"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           {/* QUIZ SCORING */}
           {isQuizMode && supports('quizScoring') && (
@@ -1538,6 +2841,79 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* COMPONENT-LEVEL SCOPED CUSTOM CSS */}
+                {(() => {
+                  const compCss = a.customCss || '';
+                  const compCssEnabled = a.customCssEnabled !== false;
+                  const compiledCompCss = compCss.trim()
+                    ? compileScopedCss(compCss, {
+                        formId: document.id,
+                        scopeId: 'preview',
+                        componentId: component.id,
+                      })
+                    : null;
+
+                  return (
+                    <div className="space-y-2.5 pt-4 border-t border-black/[0.07]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] flex items-center gap-1.5">
+                          <Code size={12} weight="bold" className="text-[#0F766E]" />
+                          <span>Component Custom CSS</span>
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <label className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-[#0B0D0F] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              disabled={isReadOnly}
+                              checked={compCssEnabled}
+                              onChange={(e) =>
+                                updateAppearance({ customCssEnabled: e.target.checked })
+                              }
+                              className="accent-[#0F766E] w-3.5 h-3.5 rounded"
+                            />
+                            <span>{compCssEnabled ? 'Active' : 'Paused'}</span>
+                          </label>
+                          {!isReadOnly && compCss.trim() && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateAppearance({ customCss: undefined, customCssEnabled: true })
+                              }
+                              className="text-[10px] font-semibold text-[#5C6066] hover:text-rose-600 transition-colors"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <p className="text-[10px] text-[#5C6066] leading-relaxed">
+                        Scoped automatically to{' '}
+                        <code className="font-mono text-[#0F766E]">
+                          [data-fs-component=&quot;{component.id}&quot;]
+                        </code>
+                        . Write plain properties (e.g. <code className="font-mono">padding: 16px;</code>) or nested rules using <code className="font-mono">&amp;</code>.
+                      </p>
+
+                      <CodeHighlightEditor
+                        language="css"
+                        compact
+                        minHeight={110}
+                        maxHeight={210}
+                        disabled={isReadOnly}
+                        value={compCss}
+                        onChange={(next) => updateAppearance({ customCss: next })}
+                        onFormat={() => updateAppearance({ customCss: formatCss(compCss) })}
+                        placeholder={'background: #F7F6F3;\nborder-radius: 12px;\n& label { font-weight: 700; }'}
+                        diagnostics={[
+                          ...(compiledCompCss?.errors || []),
+                          ...(compiledCompCss?.warnings || []),
+                        ]}
+                      />
+                    </div>
+                  );
+                })()}
               </div>
             );
           })()}

@@ -57,6 +57,13 @@ import { OutcomeResultCard } from './OutcomeResultCard';
 import { ComponentRegistry } from '../registry/ComponentRegistry';
 import { formComponentRegistry } from '../registry/builtin-components';
 import { getAllPageComponents, getOrderedComponents } from './document-engine';
+import { FormCustomCodeConfig } from '../document/types';
+import {
+  buildFormCssScopeId,
+  compileDocumentCustomCss,
+} from './custom-css-engine';
+import { CustomScriptSandbox, SandboxNotice } from './CustomScriptSandbox';
+import { getExpandedReusableQuestionNodes } from './reusable-component-engine';
 
 export interface FormSubmitMetadata {
   rawAnswers: Record<string, unknown>;
@@ -91,6 +98,14 @@ export interface FormDocumentRendererProps {
   embedded?: boolean;
   /** Optional initial page index (0-based) for stepped previewing */
   initialPageIndex?: number;
+  /** Preview-only unsaved custom CSS/JS draft override (preview before save) */
+  customCodeOverride?: FormCustomCodeConfig;
+  /** Optional suffix to guarantee unique CSS scoping when multiple previews render together */
+  scopeInstanceSuffix?: string;
+  /** Creator-only callback receiving sanitized logs from the isolated JS sandbox */
+  onSandboxLog?: (message: string) => void;
+  /** Creator-only callback receiving sanitized runtime errors from the isolated JS sandbox */
+  onSandboxError?: (errorMessage: string) => void;
 }
 
 export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
@@ -102,6 +117,10 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
   isPreview = false,
   embedded = false,
   initialPageIndex = 0,
+  customCodeOverride,
+  scopeInstanceSuffix,
+  onSandboxLog,
+  onSandboxError,
 }) => {
   const document = useMemo(() => migrateLegacyFormToDocument(source), [source]);
   const effectiveViewport: ViewportMode = viewportOverride || 'desktop';
@@ -109,6 +128,25 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     () => resolveDesignTokens(document.design, effectiveViewport),
     [document.design, effectiveViewport]
   );
+
+  // Scoped custom CSS (strictly isolated to this form instance)
+  const formScopeId = useMemo(
+    () => buildFormCssScopeId(document.id, scopeInstanceSuffix),
+    [document.id, scopeInstanceSuffix]
+  );
+  const compiledCustomCss = useMemo(
+    () =>
+      compileDocumentCustomCss(document, {
+        scopeId: formScopeId,
+        previewViewport: isPreview ? viewportOverride : undefined,
+        overrideFormCss: customCodeOverride?.css,
+      }),
+    [document, formScopeId, isPreview, viewportOverride, customCodeOverride?.css]
+  );
+  const effectiveCustomJs = customCodeOverride?.js ?? document.customCode?.js;
+
+  const [sandboxNotices, setSandboxNotices] = useState<SandboxNotice[]>([]);
+  const [sandboxFieldHints, setSandboxFieldHints] = useState<Record<string, string>>({});
 
   const initialPageId =
     document.pages[Math.max(0, Math.min(initialPageIndex, Math.max(0, document.pages.length - 1)))]
@@ -127,6 +165,11 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     for (const node of Object.values(document.components)) {
       if (node.behaviour.defaultValue !== undefined) {
         initial[node.id] = node.behaviour.defaultValue;
+      }
+    }
+    for (const { node: inner } of getExpandedReusableQuestionNodes(document)) {
+      if (inner.behaviour.defaultValue !== undefined) {
+        initial[inner.id] = inner.behaviour.defaultValue;
       }
     }
     return initial;
@@ -412,12 +455,19 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     const nextErrors: Record<string, string> = {};
     const activeIds = new Set<string>();
 
+    const reusableInstanceIds = new Set<string>();
     for (const node of nodesToCheck) {
-      const def = registry.get(node.type);
-      if (def && !def.isQuestion) continue;
       if (!logicResult.visibleComponentIds.has(node.id)) continue;
       if (logicResult.disabledComponentIds.has(node.id)) continue;
       if (viewportOverride && node.layout.responsive?.[viewportOverride]?.hidden) continue;
+
+      if (node.type === 'reusable_instance') {
+        reusableInstanceIds.add(node.id);
+        continue;
+      }
+
+      const def = registry.get(node.type);
+      if (def && !def.isQuestion) continue;
 
       activeIds.add(node.id);
       const isRequired = logicResult.requiredComponentIds.has(node.id);
@@ -426,6 +476,27 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       const check = validateFieldValue(node, val, { required: isRequired });
       if (!check.valid && check.error) {
         nextErrors[node.id] = check.error;
+      }
+    }
+
+    // Validate all internal interactive questions inside visible reusable component instances
+    if (reusableInstanceIds.size > 0) {
+      const expanded = getExpandedReusableQuestionNodes(document, {
+        visibleComponentIds: logicResult.visibleComponentIds,
+        disabledComponentIds: logicResult.disabledComponentIds,
+        viewport: effectiveViewport,
+        onlyForInstanceIds: reusableInstanceIds,
+      });
+      for (const { node: innerNode, disabled } of expanded) {
+        if (disabled) continue;
+        activeIds.add(innerNode.id);
+        const val = effectiveAnswers[innerNode.id];
+        const check = validateFieldValue(innerNode, val, {
+          required: Boolean(innerNode.validation.required),
+        });
+        if (!check.valid && check.error) {
+          nextErrors[innerNode.id] = check.error;
+        }
       }
     }
 
@@ -810,10 +881,14 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     const isDisabled = logicResult.disabledComponentIds.has(node.id);
     const pipedNode = pipeComponentNode(node, pipingContext);
 
+    const sandboxHint = sandboxFieldHints[node.id];
+
     return (
       <div
         key={node.id}
-        className={`${gridClass} ${ct.wrapperClassName} min-w-0 space-y-2`}
+        data-fs-component={node.id}
+        data-fs-type={node.type}
+        className={`fs-field ${gridClass} ${ct.wrapperClassName} min-w-0 space-y-2`}
         style={def.isContainer ? undefined : ct.wrapperStyle}
       >
         {anchoredMessages.map((msg) => renderLogicMessageCallout(msg))}
@@ -830,7 +905,18 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
           viewport={effectiveViewport}
           renderedChildren={renderedChildren}
           progressPercent={progressDisplay.barPercent}
+          reusableDefinitions={document.componentDefinitions}
+          nestedAnswers={effectiveAnswers}
+          nestedErrors={errors}
+          onNestedChange={handleFieldChange}
+          pipeNode={(inner) => pipeComponentNode(inner, pipingContext)}
         />
+        {sandboxHint && (
+          <p className="text-[11px] font-medium opacity-80 flex items-center gap-1.5 pt-0.5">
+            <Info size={13} weight="fill" className="shrink-0" style={{ color: primaryColor }} />
+            <span>{sandboxHint}</span>
+          </p>
+        )}
       </div>
     );
   };
@@ -874,9 +960,21 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       ? document.thankYouScreen.redirectUrl
       : undefined;
 
+  const sandboxAllowedFieldIds = useMemo(
+    () =>
+      visibleNodes
+        .filter((n) => {
+          const def = registry.get(n.type);
+          return Boolean(def?.isQuestion && !logicResult.disabledComponentIds.has(n.id));
+        })
+        .map((n) => n.id),
+    [visibleNodes, registry, logicResult.disabledComponentIds]
+  );
+
   return (
     <div
-      className={`studio-surface relative w-full overflow-x-hidden flex flex-col justify-center ${
+      data-fs-form-scope={formScopeId}
+      className={`fs-form studio-surface relative w-full overflow-x-hidden flex flex-col justify-center ${
         embedded ? 'min-h-full py-6 px-3 sm:px-5' : 'min-h-[100dvh] py-8 sm:py-12 px-4 sm:px-6'
       } ${tokens.fontFamilyClass}`}
       style={{
@@ -885,6 +983,45 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
         color: tokens.colors.text,
       }}
     >
+      {/* Strictly Form-Scoped Custom CSS (never leaks to host UI or other forms) */}
+      {compiledCustomCss.scopedCss && (
+        <style data-fs-custom-css={formScopeId}>{compiledCustomCss.scopedCss}</style>
+      )}
+
+      {/* Opt-In Isolated Custom JS Sandbox (Opaque-Origin Iframe, Zero Host Access) */}
+      {effectiveCustomJs?.enabled && effectiveCustomJs.code.trim() && (
+        <CustomScriptSandbox
+          enabled={Boolean(effectiveCustomJs.enabled)}
+          code={effectiveCustomJs.code}
+          timeoutMs={effectiveCustomJs.timeoutMs}
+          answers={effectiveAnswers}
+          allowedFieldIds={sandboxAllowedFieldIds}
+          activePageId={effectiveSteppedPageId || activePageId}
+          activePageIndex={Math.max(1, effectiveSteppedPageIndex + 1)}
+          onNotice={(notice) =>
+            setSandboxNotices((prev) => [...prev.slice(-2), notice])
+          }
+          onFieldHint={(fieldId, text) =>
+            setSandboxFieldHints((prev) => {
+              if (!text) {
+                const copy = { ...prev };
+                delete copy[fieldId];
+                return copy;
+              }
+              return { ...prev, [fieldId]: text };
+            })
+          }
+          onSetFieldValue={(fieldId, value) => {
+            // Only allow updating visible, enabled question fields (never bypasses validation)
+            if (sandboxAllowedFieldIds.includes(fieldId)) {
+              handleFieldChange(fieldId, value);
+            }
+          }}
+          onLog={onSandboxLog}
+          onError={onSandboxError}
+        />
+      )}
+
       {/* Optimized Background Image Layer (lazy-loaded, zero layout shift) */}
       {tokens.backgroundImageUrl && (
         <img
@@ -921,7 +1058,11 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
             </span>
             <button
               type="button"
-              onClick={handleRestart}
+              onClick={() => {
+                setSandboxNotices([]);
+                setSandboxFieldHints({});
+                handleRestart();
+              }}
               className="text-[11px] font-mono text-emerald-300 hover:text-white underline underline-offset-2 shrink-0"
             >
               Reset
@@ -932,7 +1073,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
         {/* Welcome Screen */}
         {!started && !submitted && (
           <div
-            className={`${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-6 text-center`}
+            className={`fs-card fs-welcome-screen ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-6 text-center`}
             style={tokens.surfaceStyle}
           >
             <div className={`w-full ${tokens.contentMaxWidthClass} mx-auto space-y-5`}>
@@ -947,7 +1088,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                 />
               )}
               <h1
-                className={`${tokens.headingSizeClass} font-display font-bold tracking-tight`}
+                className={`fs-form-title ${tokens.headingSizeClass} font-display font-bold tracking-tight`}
                 style={{ ...tokens.headingStyle, textAlign: 'center' }}
               >
                 {resolvePipedText(document.welcomeScreen.title || document.title, pipingContext)}
@@ -967,7 +1108,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                     setStarted(true);
                     startTimeRef.current = Date.now();
                   }}
-                  className={tokens.buttonClassName}
+                  className={`fs-submit-btn ${tokens.buttonClassName}`}
                   style={tokens.buttonStyle}
                 >
                   <span>{resolvePipedText(document.welcomeScreen.buttonText || 'Start', pipingContext)}</span>
@@ -983,7 +1124,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
           <form
             onSubmit={validateAndSubmit}
             noValidate
-            className={`${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-7`}
+            className={`fs-card ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-7`}
             style={tokens.surfaceStyle}
           >
             <div className={`w-full ${tokens.contentMaxWidthClass} mx-auto space-y-7`}>
@@ -1001,7 +1142,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                     </span>
                   )}
                   <h1
-                    className={`${tokens.headingSizeClass} font-display font-bold tracking-tight`}
+                    className={`fs-form-title ${tokens.headingSizeClass} font-display font-bold tracking-tight`}
                     style={tokens.headingStyle}
                   >
                     {resolvePipedText(
@@ -1036,7 +1177,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                     </div>
                     <div className="w-full h-1.5 rounded-full bg-black/[0.08] overflow-hidden">
                       <div
-                        className="h-full rounded-full transition-all duration-300"
+                        className="fs-progress-fill h-full rounded-full transition-all duration-300"
                         style={{
                           width: `${progressDisplay.barPercent}%`,
                           backgroundColor: primaryColor,
@@ -1046,6 +1187,20 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Sandboxed Custom Script Notices (Plain Text Only) */}
+              {sandboxNotices.length > 0 && (
+                <div className="space-y-2">
+                  {sandboxNotices.map((notice) =>
+                    renderLogicMessageCallout({
+                      id: notice.id,
+                      ruleId: 'custom_js_sandbox',
+                      tone: notice.tone,
+                      text: notice.message,
+                    })
+                  )}
+                </div>
+              )}
 
               {/* Inline Page-Level Logic Messages */}
               {unanchoredMessages.length > 0 && (
@@ -1088,7 +1243,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                 <div className={document.design.buttonFullWidth ? 'w-full' : ''}>
                   <button
                     type="submit"
-                    className={tokens.buttonClassName}
+                    className={`fs-submit-btn ${tokens.buttonClassName}`}
                     style={tokens.buttonStyle}
                   >
                     <span>{primaryActionLabel}</span>
@@ -1127,7 +1282,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
 
             return (
               <div
-                className={`${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-5 text-center`}
+                className={`fs-card fs-thankyou-screen ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-5 text-center`}
                 style={tokens.surfaceStyle}
               >
                 <div

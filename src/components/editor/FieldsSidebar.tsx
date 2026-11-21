@@ -18,16 +18,21 @@ import {
   SquaresFour,
   Files,
   Eye,
+  Cube,
 } from '@phosphor-icons/react';
 import { FormLayoutMode } from '../../types/form';
 import {
+  DEFAULT_REUSABLE_CATEGORIES,
+  filterReusableDefinitions,
   FormComponentType,
   FormDocument,
   FormPage,
   formComponentRegistry,
   getAllPageComponents,
   getPageComponents,
+  listInstanceIdsForDefinition,
   RegisteredComponentIcon,
+  ReusableComponentDefinition,
 } from '../../studio';
 import {
   parseDragPayload,
@@ -58,7 +63,14 @@ interface FieldsSidebarProps {
   onDragEndPayload: () => void;
   layoutMode: FormLayoutMode;
   onChangeLayoutMode: (mode: FormLayoutMode) => void;
-  initialTab?: 'components' | 'pages';
+  reusableDefinitions?: ReusableComponentDefinition[];
+  onCreateReusableComponent?: () => void;
+  onInsertReusableComponent?: (definition: ReusableComponentDefinition) => void;
+  onEditReusableComponent?: (definition: ReusableComponentDefinition) => void;
+  onRenameReusableComponent?: (definitionId: string, name: string) => void;
+  onDuplicateReusableComponent?: (definition: ReusableComponentDefinition) => void;
+  onDeleteReusableComponent?: (definitionId: string) => void;
+  initialTab?: 'components' | 'reusable' | 'pages';
   onCloseMobile?: () => void;
   isMobileDrawer?: boolean;
   isReadOnly?: boolean;
@@ -86,22 +98,59 @@ export const FieldsSidebar: React.FC<FieldsSidebarProps> = ({
   onDragEndPayload,
   layoutMode,
   onChangeLayoutMode,
+  reusableDefinitions = [],
+  onCreateReusableComponent,
+  onInsertReusableComponent,
+  onEditReusableComponent,
+  onRenameReusableComponent,
+  onDuplicateReusableComponent,
+  onDeleteReusableComponent,
   initialTab = 'components',
   onCloseMobile,
   isMobileDrawer = false,
   isReadOnly = false,
 }) => {
-  const [sidebarTab, setSidebarTab] = useState<'components' | 'pages'>(initialTab);
+  const [sidebarTab, setSidebarTab] = useState<'components' | 'reusable' | 'pages'>(initialTab);
   const [searchQuery, setSearchQuery] = useState('');
+  const [reusableSearch, setReusableSearch] = useState('');
+  const [reusableCategory, setReusableCategory] = useState('All');
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [renamingPageId, setRenamingPageId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [renamingDefId, setRenamingDefId] = useState<string | null>(null);
+  const [renameDefDraft, setRenameDefDraft] = useState('');
   const [dragOverPageId, setDragOverPageId] = useState<string | null>(null);
 
   const categoryGroups = useMemo(
     () => formComponentRegistry.listByCategory(searchQuery),
     [searchQuery]
   );
+
+  const reusableCategories = useMemo(() => {
+    const set = new Set<string>(['All', ...DEFAULT_REUSABLE_CATEGORIES]);
+    for (const def of reusableDefinitions) {
+      if (def.category?.trim()) set.add(def.category.trim());
+    }
+    return Array.from(set);
+  }, [reusableDefinitions]);
+
+  const filteredReusable = useMemo(
+    () => filterReusableDefinitions(reusableDefinitions, reusableSearch, reusableCategory),
+    [reusableDefinitions, reusableSearch, reusableCategory]
+  );
+
+  const startRenameDef = (def: ReusableComponentDefinition) => {
+    if (isReadOnly) return;
+    setRenamingDefId(def.id);
+    setRenameDefDraft(def.name);
+  };
+
+  const commitRenameDef = () => {
+    if (renamingDefId && renameDefDraft.trim() && onRenameReusableComponent) {
+      onRenameReusableComponent(renamingDefId, renameDefDraft.trim());
+    }
+    setRenamingDefId(null);
+  };
 
   const toggleCategory = (categoryId: string) => {
     setCollapsedCategories((prev) => ({
@@ -149,12 +198,18 @@ export const FieldsSidebar: React.FC<FieldsSidebarProps> = ({
           <div className="flex items-center justify-between">
             <div>
               <h3 className="font-display font-semibold text-base text-[#0B0D0F]">
-                {sidebarTab === 'components' ? 'Component Library' : 'Pages & Outline'}
+                {sidebarTab === 'components'
+                  ? 'Component Library'
+                  : sidebarTab === 'reusable'
+                    ? 'Reusable Components'
+                    : 'Pages & Outline'}
               </h3>
               <p className="text-xs text-[#5C6066]">
                 {sidebarTab === 'components'
                   ? 'Tap any block to insert it into your form'
-                  : 'Manage pages, reorder sections, or jump to blocks'}
+                  : sidebarTab === 'reusable'
+                    ? 'Insert saved components across any page or form'
+                    : 'Manage pages, reorder sections, or jump to blocks'}
               </p>
             </div>
             {onCloseMobile && (
@@ -171,31 +226,43 @@ export const FieldsSidebar: React.FC<FieldsSidebarProps> = ({
         </div>
       )}
 
-      {/* Primary Sidebar Tab Switcher: Components vs Pages */}
+      {/* Primary Sidebar Tab Switcher: Blocks | Reusable | Pages */}
       <div className="p-3 border-b border-black/[0.07] bg-[#FAF9F7] shrink-0">
-        <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-black/[0.05]">
+        <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-black/[0.05]">
           <button
             type="button"
             onClick={() => setSidebarTab('components')}
-            className={`py-2 px-2.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+            className={`py-2 px-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center justify-center gap-1 ${
               sidebarTab === 'components'
                 ? 'bg-white text-[#0B0D0F] shadow-xs'
                 : 'text-[#5C6066] hover:text-[#0B0D0F]'
             }`}
           >
-            <SquaresFour size={15} weight={sidebarTab === 'components' ? 'duotone' : 'regular'} />
-            <span>Components</span>
+            <SquaresFour size={14} weight={sidebarTab === 'components' ? 'duotone' : 'regular'} />
+            <span>Blocks</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarTab('reusable')}
+            className={`py-2 px-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center justify-center gap-1 ${
+              sidebarTab === 'reusable'
+                ? 'bg-white text-[#0B0D0F] shadow-xs'
+                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+            }`}
+          >
+            <Cube size={14} weight={sidebarTab === 'reusable' ? 'duotone' : 'regular'} />
+            <span>Saved{reusableDefinitions.length > 0 ? ` (${reusableDefinitions.length})` : ''}</span>
           </button>
           <button
             type="button"
             onClick={() => setSidebarTab('pages')}
-            className={`py-2 px-2.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+            className={`py-2 px-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center justify-center gap-1 ${
               sidebarTab === 'pages'
                 ? 'bg-white text-[#0B0D0F] shadow-xs'
                 : 'text-[#5C6066] hover:text-[#0B0D0F]'
             }`}
           >
-            <Files size={15} weight={sidebarTab === 'pages' ? 'duotone' : 'regular'} />
+            <Files size={14} weight={sidebarTab === 'pages' ? 'duotone' : 'regular'} />
             <span>Pages ({document.pages.length})</span>
           </button>
         </div>
@@ -346,7 +413,277 @@ export const FieldsSidebar: React.FC<FieldsSidebarProps> = ({
       )}
 
       {/* ====================================================================
-          TAB B: PAGE NAVIGATOR & FORM OUTLINE
+          TAB B: REUSABLE COMPONENT LIBRARY (CROSS-FORM SAVED COMPONENTS)
+      ==================================================================== */}
+      {sidebarTab === 'reusable' && (
+        <>
+          <div className="p-3 bg-white border-b border-black/[0.06] space-y-2.5 shrink-0">
+            {!isReadOnly && onCreateReusableComponent && (
+              <button
+                type="button"
+                onClick={onCreateReusableComponent}
+                className="w-full py-2 px-3 rounded-lg bg-[#0F766E] hover:bg-[#0D665F] text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+              >
+                <Plus size={14} weight="bold" />
+                <span>Create Reusable Component</span>
+              </button>
+            )}
+
+            <div className="relative">
+              <MagnifyingGlass
+                size={14}
+                weight="regular"
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#5C6066] pointer-events-none"
+              />
+              <input
+                type="text"
+                value={reusableSearch}
+                onChange={(e) => setReusableSearch(e.target.value)}
+                placeholder="Search saved components..."
+                aria-label="Search reusable components"
+                className="w-full pl-8 pr-7 py-1.5 rounded-lg bg-[#F7F6F3] focus:bg-white border border-black/[0.07] focus:border-[#0F766E] text-xs text-[#0B0D0F] placeholder:text-[#5C6066]/70 focus:outline-none transition-all"
+              />
+              {reusableSearch && (
+                <button
+                  type="button"
+                  onClick={() => setReusableSearch('')}
+                  aria-label="Clear reusable search"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded-md hover:bg-black/[0.06] text-[#5C6066] flex items-center justify-center"
+                >
+                  <X size={11} weight="bold" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="reusable-cat-filter"
+                className="font-mono text-[10px] uppercase tracking-wider text-[#5C6066] shrink-0"
+              >
+                Category
+              </label>
+              <select
+                id="reusable-cat-filter"
+                value={reusableCategory}
+                onChange={(e) => setReusableCategory(e.target.value)}
+                className="flex-1 px-2.5 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.07] text-[11px] font-medium text-[#0B0D0F] focus:border-[#0F766E] focus:outline-none"
+              >
+                {reusableCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+            {reusableDefinitions.length === 0 ? (
+              <div className="p-5 rounded-xl bg-[#FAF9F7] border border-dashed border-black/[0.12] text-center space-y-2.5">
+                <div className="w-9 h-9 rounded-xl bg-white border border-black/[0.08] text-[#0F766E] mx-auto flex items-center justify-center">
+                  <Cube size={18} weight="duotone" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-[#0B0D0F]">No saved components yet</p>
+                  <p className="text-[11px] text-[#5C6066] leading-relaxed">
+                    Build custom headers, callouts, or field groups once and reuse them across any form.
+                  </p>
+                </div>
+                {!isReadOnly && onCreateReusableComponent && (
+                  <button
+                    type="button"
+                    onClick={onCreateReusableComponent}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0B0D0F] hover:bg-[#191D21] text-white text-[11px] font-semibold transition-colors"
+                  >
+                    <Plus size={12} weight="bold" />
+                    <span>Build First Component</span>
+                  </button>
+                )}
+              </div>
+            ) : filteredReusable.length === 0 ? (
+              <div className="p-5 rounded-xl bg-[#FAF9F7] border border-black/[0.06] text-center space-y-2">
+                <p className="text-xs font-semibold text-[#0B0D0F]">No matching saved components</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReusableSearch('');
+                    setReusableCategory('All');
+                  }}
+                  className="text-xs font-semibold text-[#0F766E] hover:underline"
+                >
+                  Clear filters
+                </button>
+              </div>
+            ) : (
+              filteredReusable.map((def) => {
+                const instanceCount = listInstanceIdsForDefinition(document, def.id).length;
+                const dragPayload: StudioDragPayload = {
+                  kind: 'reusable',
+                  definitionId: def.id,
+                };
+                const isRenaming = renamingDefId === def.id;
+
+                return (
+                  <div
+                    key={def.id}
+                    draggable={!isReadOnly && !isRenaming}
+                    onDragStart={(e) => {
+                      if (isReadOnly || isRenaming) return;
+                      e.dataTransfer.effectAllowed = 'copy';
+                      e.dataTransfer.setData(STUDIO_DND_MIME, serializeDragPayload(dragPayload));
+                      e.dataTransfer.setData('text/plain', serializeDragPayload(dragPayload));
+                      onDragStartPayload(dragPayload);
+                    }}
+                    onDragEnd={() => onDragEndPayload()}
+                    className="group rounded-xl bg-white border border-black/[0.09] hover:border-[#0F766E] transition-all p-2.5 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-start gap-2 min-w-0 flex-1">
+                        <span className="w-7 h-7 rounded-lg bg-[#0F766E]/10 text-[#0F766E] flex items-center justify-center shrink-0 mt-0.5">
+                          <Cube size={15} weight="duotone" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          {isRenaming ? (
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                autoFocus
+                                value={renameDefDraft}
+                                onChange={(e) => setRenameDefDraft(e.target.value)}
+                                onBlur={commitRenameDef}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') commitRenameDef();
+                                  if (e.key === 'Escape') setRenamingDefId(null);
+                                }}
+                                className="w-full px-1.5 py-0.5 text-xs font-semibold rounded bg-white border border-[#0F766E] focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={commitRenameDef}
+                                className="w-5 h-5 rounded bg-[#0F766E] text-white flex items-center justify-center shrink-0"
+                                aria-label="Confirm rename"
+                              >
+                                <Check size={11} weight="bold" />
+                              </button>
+                            </div>
+                          ) : (
+                            <p
+                              className="text-xs font-semibold text-[#0B0D0F] truncate"
+                              onDoubleClick={() => startRenameDef(def)}
+                              title={def.description || def.name}
+                            >
+                              {def.name}
+                            </p>
+                          )}
+                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-0.5 text-[10px] font-mono text-[#5C6066]">
+                            <span>{def.category}</span>
+                            <span>·</span>
+                            <span>v{def.version}</span>
+                            <span>·</span>
+                            <span>
+                              {Object.keys(def.slots).length}{' '}
+                              {Object.keys(def.slots).length === 1 ? 'block' : 'blocks'}
+                            </span>
+                            {instanceCount > 0 && (
+                              <>
+                                <span>·</span>
+                                <span className="text-[#0F766E] font-semibold">
+                                  {instanceCount} on form
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {!isReadOnly && (
+                        <span
+                          className="text-[#5C6066]/40 group-hover:text-[#0F766E] cursor-grab active:cursor-grabbing shrink-0 pt-0.5"
+                          title="Drag onto canvas"
+                        >
+                          <DotsSixVertical size={13} weight="bold" />
+                        </span>
+                      )}
+                    </div>
+
+                    {def.description && (
+                      <p className="text-[11px] text-[#5C6066] line-clamp-2 leading-snug">
+                        {def.description}
+                      </p>
+                    )}
+
+                    <div className="flex items-center justify-between gap-1 pt-1.5 border-t border-black/[0.05]">
+                      <button
+                        type="button"
+                        disabled={isReadOnly || !onInsertReusableComponent}
+                        onClick={() => {
+                          onInsertReusableComponent?.(def);
+                          if (onCloseMobile) onCloseMobile();
+                        }}
+                        className="px-2.5 py-1 rounded-md bg-[#F7F6F3] hover:bg-[#0F766E] text-[#0B0D0F] hover:text-white text-[11px] font-semibold flex items-center gap-1 transition-colors disabled:opacity-45"
+                      >
+                        <Plus size={11} weight="bold" />
+                        <span>Insert</span>
+                      </button>
+
+                      {!isReadOnly && (
+                        <div className="flex items-center gap-0.5">
+                          {onEditReusableComponent && (
+                            <button
+                              type="button"
+                              onClick={() => onEditReusableComponent(def)}
+                              className="px-1.5 py-1 rounded-md hover:bg-black/[0.06] text-[10px] font-semibold text-[#5C6066] hover:text-[#0B0D0F] transition-colors"
+                              title="Edit component definition"
+                            >
+                              Edit
+                            </button>
+                          )}
+                          {onRenameReusableComponent && (
+                            <button
+                              type="button"
+                              onClick={() => startRenameDef(def)}
+                              className="w-6 h-6 rounded-md hover:bg-black/[0.06] text-[#5C6066] hover:text-[#0B0D0F] flex items-center justify-center"
+                              title="Rename component"
+                              aria-label="Rename component"
+                            >
+                              <PencilSimple size={12} weight="regular" />
+                            </button>
+                          )}
+                          {onDuplicateReusableComponent && (
+                            <button
+                              type="button"
+                              onClick={() => onDuplicateReusableComponent(def)}
+                              className="w-6 h-6 rounded-md hover:bg-black/[0.06] text-[#5C6066] hover:text-[#0B0D0F] flex items-center justify-center"
+                              title="Duplicate component"
+                              aria-label="Duplicate component"
+                            >
+                              <Copy size={12} weight="regular" />
+                            </button>
+                          )}
+                          {onDeleteReusableComponent && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteReusableComponent(def.id)}
+                              className="w-6 h-6 rounded-md hover:bg-rose-50 text-[#5C6066] hover:text-rose-600 flex items-center justify-center"
+                              title="Delete from library"
+                              aria-label="Delete from library"
+                            >
+                              <Trash size={12} weight="regular" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ====================================================================
+          TAB C: PAGE NAVIGATOR & FORM OUTLINE
       ==================================================================== */}
       {sidebarTab === 'pages' && (
         <>

@@ -339,9 +339,9 @@ test('repairFormDocument recovers corrupted documents while preserving valid nes
 // 3. Central Component Registry, Categories, Search & Extensibility
 // ============================================================================
 
-test('ComponentRegistry includes all 31 built-in components across 4 categories with live search', () => {
+test('ComponentRegistry includes all 34 built-in components across 4 categories with live search', () => {
   const all = formComponentRegistry.list();
-  assert.equal(all.length, 31);
+  assert.equal(all.length, 34);
 
   const groups = formComponentRegistry.listByCategory();
   assert.equal(groups.length, 4);
@@ -355,6 +355,9 @@ test('ComponentRegistry includes all 31 built-in components across 4 categories 
     'heading',
     'paragraph',
     'rich_text',
+    'custom_html',
+    'button_link',
+    'reusable_instance',
     'image',
     'video',
     'divider',

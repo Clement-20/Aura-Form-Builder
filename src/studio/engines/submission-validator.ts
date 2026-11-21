@@ -34,6 +34,7 @@ import {
   ResolvedOutcomeResult,
   ScoringEvaluationResult,
 } from './scoring-engine';
+import { getExpandedReusableQuestionNodes } from './reusable-component-engine';
 
 export interface SubmissionValidationResult {
   valid: boolean;
@@ -88,10 +89,20 @@ export function validateAndSanitizeSubmission(
   const hiddenFieldPolicy: HiddenFieldPolicy =
     document.settings.hiddenFieldPolicy || 'preserve_on_hide_omit_on_submit';
 
-  // Copy only known component IDs from rawAnswers to prevent arbitrary payload key pollution
+  // Collect all known internal question IDs from reusable component instances
+  const allReusableQuestions = getExpandedReusableQuestionNodes(document);
+  const reusableParentByFieldId = new Map<string, string>();
+  for (const item of allReusableQuestions) {
+    reusableParentByFieldId.set(item.node.id, item.instanceId);
+  }
+
+  // Copy only known component IDs (top-level + reusable instance slots) to prevent arbitrary payload key pollution
   const cleanRawAnswers: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(rawAnswers || {})) {
-    if (Object.prototype.hasOwnProperty.call(document.components, key)) {
+    if (
+      Object.prototype.hasOwnProperty.call(document.components, key) ||
+      reusableParentByFieldId.has(key)
+    ) {
       cleanRawAnswers[key] = value;
     }
   }
@@ -151,6 +162,23 @@ export function validateAndSanitizeSubmission(
     }
   }
 
+  // 1b. Validate internal interactive questions inside visible, enabled reusable component instances
+  const activeReusableQuestions = getExpandedReusableQuestionNodes(document, {
+    visibleComponentIds: activeVisibleIds,
+    disabledComponentIds: logicResult.disabledComponentIds,
+  });
+  for (const { node: innerNode, disabled } of activeReusableQuestions) {
+    if (disabled) continue;
+    const val = effectiveAnswers[innerNode.id];
+    const fieldCheck = validateFieldValue(innerNode, val, {
+      required: Boolean(innerNode.validation.required),
+      now: options?.now,
+    });
+    if (!fieldCheck.valid && fieldCheck.error) {
+      errors[innerNode.id] = fieldCheck.error;
+    }
+  }
+
   // 2. Cross-field validation across visible, enabled fields
   const crossFieldErrors = validateCrossFieldRules(
     document,
@@ -177,9 +205,12 @@ export function validateAndSanitizeSubmission(
   const sanitizedAnswers: Record<string, unknown> = {};
   for (const [compId, value] of Object.entries(effectiveAnswers)) {
     const component = document.components[compId];
-    if (!component) continue;
+    const reusableParentId = reusableParentByFieldId.get(compId);
+    if (!component && !reusableParentId) continue;
 
-    const isVisible = activeVisibleIds.has(compId);
+    const isVisible = component
+      ? activeVisibleIds.has(compId)
+      : Boolean(reusableParentId && activeVisibleIds.has(reusableParentId));
     if (hiddenFieldPolicy === 'preserve_always') {
       sanitizedAnswers[compId] = value;
     } else if (isVisible) {

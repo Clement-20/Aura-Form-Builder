@@ -33,8 +33,10 @@ export type ContentComponentType =
   | 'heading'
   | 'paragraph'
   | 'rich_text'
+  | 'custom_html'
   | 'image'
   | 'video'
+  | 'button_link'
   | 'divider'
   | 'spacer';
 
@@ -48,7 +50,8 @@ export type LayoutComponentType =
 export type SpecialComponentType =
   | 'welcome_screen'
   | 'thank_you_screen'
-  | 'progress_indicator';
+  | 'progress_indicator'
+  | 'reusable_instance';
 
 export type VisualComponentType =
   | ContentComponentType
@@ -90,6 +93,16 @@ export interface ComponentContentProps {
   spacerSize?: 'sm' | 'md' | 'lg';
   acceptedFileTypes?: string;
   maxFileSizeMb?: number;
+  /** Raw authored HTML for `custom_html` blocks (always sanitized before rendering) */
+  htmlContent?: string;
+  /** When true, resolves plain-text {{field}} piping tokens inside sanitized custom HTML text nodes */
+  htmlEnablePiping?: boolean;
+  /** Safe target URL for `button_link` blocks (validated with isSafeHttpUrl / mailto:) */
+  buttonUrl?: string;
+  /** Visual variant for `button_link` blocks */
+  buttonVariant?: 'primary' | 'secondary' | 'outline';
+  /** Whether a `button_link` opens in a new tab with rel="noopener noreferrer" */
+  buttonOpenInNewTab?: boolean;
 }
 
 export interface ComponentAppearanceProps {
@@ -139,6 +152,10 @@ export interface ComponentAppearanceProps {
   buttonFullWidth?: boolean;
 
   customClassName?: string;
+  /** Optional component-scoped CSS declarations or rules (scoped to [data-fs-component="<id>"]) */
+  customCss?: string;
+  /** Allows temporarily disabling component-level custom CSS without losing it */
+  customCssEnabled?: boolean;
 }
 
 export interface ComponentLayoutProps {
@@ -252,6 +269,8 @@ export interface FormComponentNode {
   layout: ComponentLayoutProps;
   behaviour: ComponentBehaviourProps;
   validation: ComponentValidationProps;
+  /** Present when type === 'reusable_instance': references a versioned ReusableComponentDefinition + local overrides */
+  reusableInstance?: ReusableInstanceConfig;
 }
 
 export interface FormPage {
@@ -539,6 +558,154 @@ export interface FormLogicSpec {
   extensions?: Record<string, unknown>;
 }
 
+// ============================================================================
+// Advanced Customisation: Scoped CSS, Custom HTML & Sandboxed JS (Phase 3.1)
+// ============================================================================
+
+export const CUSTOM_CODE_SCHEMA_VERSION = 1 as const;
+
+export interface CustomCssConfig {
+  enabled: boolean;
+  /** Form-level CSS authored by the creator (always scoped to this form instance) */
+  code: string;
+}
+
+export interface CustomJsConfig {
+  /** Strictly opt-in and disabled by default; executes only inside opaque-origin sandboxed iframe */
+  enabled: boolean;
+  /** Creator script using the minimal sandboxed `flexstore` API */
+  code: string;
+  /** Per-event execution watchdog timeout in milliseconds (clamped 50–1000ms) */
+  timeoutMs?: number;
+}
+
+export interface FormCustomCodeConfig {
+  schemaVersion: typeof CUSTOM_CODE_SCHEMA_VERSION;
+  css: CustomCssConfig;
+  js: CustomJsConfig;
+  updatedAt?: string;
+}
+
+// ============================================================================
+// Reusable Component System (Phase 3.2)
+// ============================================================================
+
+export const COMPONENT_LIBRARY_SCHEMA_VERSION = 1 as const;
+
+export type ReusablePropType =
+  | 'text'
+  | 'textarea'
+  | 'image_url'
+  | 'button_label'
+  | 'url'
+  | 'color'
+  | 'alignment'
+  | 'spacing'
+  | 'layout_columns'
+  | 'visibility';
+
+export type ReusablePropBindingTarget =
+  | {
+      scope: 'root';
+      property:
+        | 'backgroundColor'
+        | 'borderColor'
+        | 'textColor'
+        | 'textAlign'
+        | 'padding'
+        | 'gap'
+        | 'columns'
+        | 'visible';
+    }
+  | {
+      scope: 'slot';
+      slotId: string;
+      property:
+        | 'label'
+        | 'body'
+        | 'helpText'
+        | 'placeholder'
+        | 'mediaUrl'
+        | 'mediaAlt'
+        | 'videoUrl'
+        | 'buttonUrl'
+        | 'textColor'
+        | 'backgroundColor'
+        | 'textAlign'
+        | 'visible';
+    };
+
+export interface ReusablePropDefinition {
+  id: string;
+  key: string;
+  label: string;
+  description?: string;
+  type: ReusablePropType;
+  defaultValue: string | number | boolean;
+  binding: ReusablePropBindingTarget;
+}
+
+export interface ReusableSlotNode {
+  /** Stable slot identifier within the reusable definition (never changes across versions unless deleted) */
+  slotId: string;
+  type: FormComponentType;
+  parentSlotId?: string | null;
+  childrenSlotIds?: string[];
+  content: ComponentContentProps;
+  appearance: ComponentAppearanceProps;
+  layout: ComponentLayoutProps;
+  behaviour: ComponentBehaviourProps;
+  validation: ComponentValidationProps;
+}
+
+export interface ReusableComponentDefinition {
+  schemaVersion: typeof COMPONENT_LIBRARY_SCHEMA_VERSION;
+  id: string;
+  /** Monotonically increasing integer version (1, 2, 3...) bumped on every saved master edit */
+  version: number;
+  name: string;
+  description: string;
+  category: string;
+  tags?: string[];
+  ownerId?: string;
+  rootLayout: ComponentLayoutProps;
+  rootAppearance: ComponentAppearanceProps;
+  hiddenByDefault?: boolean;
+  /** Ordered top-level slot IDs */
+  rootSlotIds: string[];
+  /** All internal building blocks keyed by slotId */
+  slots: Record<string, ReusableSlotNode>;
+  /** Typed configurable properties exposed in the existing Component Inspector */
+  props: ReusablePropDefinition[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReusableSlotOverride {
+  content?: Partial<ComponentContentProps>;
+  appearance?: Partial<ComponentAppearanceProps>;
+  layout?: Partial<ComponentLayoutProps>;
+  validation?: Partial<ComponentValidationProps>;
+  hidden?: boolean;
+}
+
+export type ReusableInstanceSyncMode = 'linked' | 'detached';
+
+export interface ReusableInstanceConfig {
+  definitionId: string;
+  /** The definition version this instance was created from or last synced to */
+  definitionVersion: number;
+  /** Last known display name so the UI stays legible even if the definition is deleted */
+  definitionNameSnapshot: string;
+  syncMode: ReusableInstanceSyncMode;
+  /** Local overrides for exposed typed properties (keyed by ReusablePropDefinition.key) */
+  propOverrides: Record<string, string | number | boolean>;
+  /** Fine-grained per-slot local overrides (content/appearance/layout/validation/visibility) */
+  slotOverrides: Record<string, ReusableSlotOverride>;
+  /** Self-contained snapshot captured at creation/sync/detach so deleted definitions never break forms */
+  fallbackDefinition?: ReusableComponentDefinition;
+}
+
 export interface FormDocumentMetadata {
   createdAt: string;
   updatedAt: string;
@@ -567,6 +734,10 @@ export interface FormDocument {
   variables: FormVariableDefinition[];
   scoring?: FormScoringConfig;
   outcomes?: FormOutcomeConfig;
+  /** Versioned advanced customisation configuration (scoped CSS & optional sandboxed JS) */
+  customCode?: FormCustomCodeConfig;
+  /** Versioned reusable component definitions referenced by instances in this form */
+  componentDefinitions?: Record<string, ReusableComponentDefinition>;
   /** Reserved extension slot for future external integrations (webhooks, CRM, Slack, etc.) */
   integrations: Record<string, unknown>;
   metadata: FormDocumentMetadata;

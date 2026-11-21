@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Plus,
   Files,
@@ -24,13 +24,20 @@ import { FieldInspector } from './FieldInspector';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ThemeStudio } from './ThemeStudio';
 import { VisualLogicBuilder } from './VisualLogicBuilder';
+import { AdvancedCodeStudio } from './AdvancedCodeStudio';
 import { SettingsTab } from './SettingsTab';
 import { ShareTab } from './ShareTab';
 import { AnalyticsTab } from './AnalyticsTab';
 import { PreviewModal } from '../runner/PreviewModal';
 import { AIGeneratorModal } from './AIGeneratorModal';
+import { ReusableComponentBuilderModal } from './ReusableComponentBuilderModal';
 import { CoAuthorPanel } from '../team/CoAuthorPanel';
-import { saveForm } from '../../lib/storage';
+import {
+  deleteReusableComponentFromLibrary,
+  getReusableComponentLibrary,
+  saveForm,
+  saveReusableComponentToLibrary,
+} from '../../lib/storage';
 import { useFirebase } from '../../contexts/FirebaseContext';
 import {
   addFormComment,
@@ -47,14 +54,19 @@ import {
 } from '../../lib/team-service';
 import {
   ActivityNote,
+  duplicateReusableComponentDefinition,
+  extractDefinitionFromCanvasNode,
   getAllPageComponents,
+  listInstanceIdsForDefinition,
+  ReusableComponentDefinition,
+  updateReusableComponentDefinition,
   useFormStudio,
 } from '../../studio';
 import { StudioDragPayload } from './dnd-types';
 
 interface FormEditorProps {
   initialForm: FormSchema;
-  initialTab?: 'build' | 'theme' | 'logic' | 'settings' | 'share' | 'analytics';
+  initialTab?: 'build' | 'theme' | 'logic' | 'code' | 'settings' | 'share' | 'analytics';
   teamId?: string | null;
   team?: TeamWorkspace | null;
   teamRole?: TeamRole | null;
@@ -67,6 +79,7 @@ interface FormEditorProps {
 type PendingConfirmation =
   | { kind: 'delete_page'; pageId: string; pageTitle: string; blockCount: number }
   | { kind: 'delete_container'; componentId: string; label: string; childCount: number }
+  | { kind: 'delete_reusable_def'; definitionId: string; name: string; instanceCount: number }
   | { kind: 'publish_logic_errors'; errorCount: number; firstErrorMessage: string };
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -132,11 +145,171 @@ export const FormEditor: React.FC<FormEditorProps> = ({
   const [remoteUpdateBanner, setRemoteUpdateBanner] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<
-    'build' | 'theme' | 'logic' | 'settings' | 'share' | 'analytics'
+    'build' | 'theme' | 'logic' | 'code' | 'settings' | 'share' | 'analytics'
   >(initialTab);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isAIOpen, setIsAIOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Phase 3.2: Cross-form Reusable Component Library + Visual Builder Modal state
+  const [reusableLibrary, setReusableLibrary] = useState<ReusableComponentDefinition[]>(() =>
+    getReusableComponentLibrary(firebaseUser?.uid)
+  );
+  const [reusableBuilderState, setReusableBuilderState] = useState<{
+    isOpen: boolean;
+    editingDef: ReusableComponentDefinition | null;
+  }>({ isOpen: false, editingDef: null });
+
+  useEffect(() => {
+    setReusableLibrary(getReusableComponentLibrary(firebaseUser?.uid));
+  }, [firebaseUser?.uid]);
+
+  // Merge document-embedded definitions with creator's local library (library takes precedence for latest version detection)
+  const mergedReusableDefsMap = useMemo<Record<string, ReusableComponentDefinition>>(() => {
+    const map: Record<string, ReusableComponentDefinition> = {};
+    if (doc.componentDefinitions) {
+      for (const [id, def] of Object.entries(doc.componentDefinitions)) {
+        map[id] = def;
+      }
+    }
+    for (const def of reusableLibrary) {
+      map[def.id] = def;
+    }
+    return map;
+  }, [doc.componentDefinitions, reusableLibrary]);
+
+  const mergedReusableList = useMemo<ReusableComponentDefinition[]>(() => {
+    return Object.values(mergedReusableDefsMap).sort((a, b) =>
+      b.updatedAt.localeCompare(a.updatedAt)
+    );
+  }, [mergedReusableDefsMap]);
+
+  const handleOpenCreateReusable = useCallback(() => {
+    if (isReadOnly) return;
+    setReusableBuilderState({ isOpen: true, editingDef: null });
+  }, [isReadOnly]);
+
+  const handleEditReusableDefinition = useCallback(
+    (definitionOrId: ReusableComponentDefinition | string) => {
+      if (isReadOnly) return;
+      const def =
+        typeof definitionOrId === 'string'
+          ? mergedReusableDefsMap[definitionOrId] || null
+          : definitionOrId;
+      if (!def) return;
+      setReusableBuilderState({ isOpen: true, editingDef: def });
+    },
+    [isReadOnly, mergedReusableDefsMap]
+  );
+
+  const handleSaveNodeAsReusable = useCallback(
+    (componentId: string) => {
+      if (isReadOnly) return;
+      const extracted = extractDefinitionFromCanvasNode(doc, componentId, {
+        ownerId: firebaseUser?.uid,
+      });
+      if (!extracted) return;
+      setReusableBuilderState({ isOpen: true, editingDef: extracted });
+    },
+    [isReadOnly, doc, firebaseUser?.uid]
+  );
+
+  const handleSaveReusableDefinition = useCallback(
+    (
+      savedDef: ReusableComponentDefinition,
+      options: { insertAfterSave?: boolean; syncLinkedInstances?: boolean }
+    ) => {
+      const updatedLib = saveReusableComponentToLibrary(savedDef);
+      setReusableLibrary(
+        firebaseUser?.uid
+          ? updatedLib.filter((d) => !d.ownerId || d.ownerId === firebaseUser.uid)
+          : updatedLib
+      );
+      if (options.syncLinkedInstances) {
+        studio.syncAllReusableInstances(savedDef, { preserveOverrides: true });
+      } else if (listInstanceIdsForDefinition(doc, savedDef.id).length > 0) {
+        studio.upsertReusableDefinition(savedDef);
+      }
+      if (options.insertAfterSave) {
+        studio.insertReusableComponent(savedDef);
+      }
+      setReusableBuilderState({ isOpen: false, editingDef: null });
+    },
+    [firebaseUser?.uid, studio, doc]
+  );
+
+  const handleRenameReusableDefinition = useCallback(
+    (definitionId: string, name: string) => {
+      if (isReadOnly) return;
+      const existing = mergedReusableDefsMap[definitionId];
+      if (!existing) return;
+      const renamed = updateReusableComponentDefinition(existing, { name }, { bumpVersion: false });
+      const updatedLib = saveReusableComponentToLibrary(renamed);
+      setReusableLibrary(
+        firebaseUser?.uid
+          ? updatedLib.filter((d) => !d.ownerId || d.ownerId === firebaseUser.uid)
+          : updatedLib
+      );
+      if (doc.componentDefinitions?.[definitionId]) {
+        studio.upsertReusableDefinition(renamed);
+      }
+    },
+    [isReadOnly, mergedReusableDefsMap, firebaseUser?.uid, doc.componentDefinitions, studio]
+  );
+
+  const handleDuplicateReusableDefinition = useCallback(
+    (definition: ReusableComponentDefinition) => {
+      if (isReadOnly) return;
+      const dup = duplicateReusableComponentDefinition(definition);
+      const updatedLib = saveReusableComponentToLibrary(dup);
+      setReusableLibrary(
+        firebaseUser?.uid
+          ? updatedLib.filter((d) => !d.ownerId || d.ownerId === firebaseUser.uid)
+          : updatedLib
+      );
+    },
+    [isReadOnly, firebaseUser?.uid]
+  );
+
+  const handleRequestDeleteReusableDefinition = useCallback(
+    (definitionId: string) => {
+      if (isReadOnly) return;
+      const existing = mergedReusableDefsMap[definitionId];
+      if (!existing) return;
+      const instanceCount = listInstanceIdsForDefinition(doc, definitionId).length;
+      setPendingConfirm({
+        kind: 'delete_reusable_def',
+        definitionId,
+        name: existing.name,
+        instanceCount,
+      });
+    },
+    [isReadOnly, mergedReusableDefsMap, doc]
+  );
+
+  const handleInsertReusableById = useCallback(
+    (
+      definitionId: string,
+      pageId: string,
+      options?: { parentId?: string | null; insertAtIndex?: number }
+    ) => {
+      if (isReadOnly) return;
+      const def = mergedReusableDefsMap[definitionId];
+      if (!def) return;
+      studio.insertReusableComponent(def, pageId, options);
+    },
+    [isReadOnly, mergedReusableDefsMap, studio]
+  );
+
+  const handleSyncReusableInstance = useCallback(
+    (instanceId: string, definitionId: string, preserveOverrides: boolean) => {
+      if (isReadOnly) return;
+      const def = mergedReusableDefsMap[definitionId];
+      if (!def) return;
+      studio.syncReusableInstance(instanceId, def, { preserveOverrides });
+    },
+    [isReadOnly, mergedReusableDefsMap, studio]
+  );
 
   // Confirmation-guarded delete handlers
   const handleRequestDeleteComponent = useCallback(
@@ -214,19 +387,24 @@ export const FormEditor: React.FC<FormEditorProps> = ({
       if (isReadOnly) return;
       if (payload.kind === 'new') {
         studio.addComponent(payload.componentType, targetPageId);
+      } else if (payload.kind === 'reusable') {
+        const def = mergedReusableDefsMap[payload.definitionId];
+        if (def) {
+          studio.insertReusableComponent(def, targetPageId);
+        }
       } else {
         studio.moveComponentToPage(payload.componentId, targetPageId);
       }
       studio.selectPageById(targetPageId);
       setActiveDrag(null);
     },
-    [isReadOnly, studio]
+    [isReadOnly, studio, mergedReusableDefsMap]
   );
 
   // Keyboard shortcuts: Undo, Redo, Duplicate, Delete, ArrowUp/ArrowDown selection, Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (pendingConfirm || isPreviewOpen || isAIOpen) return;
+      if (pendingConfirm || isPreviewOpen || isAIOpen || reusableBuilderState.isOpen) return;
 
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
@@ -297,6 +475,7 @@ export const FormEditor: React.FC<FormEditorProps> = ({
     pendingConfirm,
     isPreviewOpen,
     isAIOpen,
+    reusableBuilderState.isOpen,
     activeTab,
     isReadOnly,
     doc,
@@ -349,7 +528,7 @@ export const FormEditor: React.FC<FormEditorProps> = ({
         firebaseUser,
         teamRole,
         studio.selectedComponentId,
-        activeTab
+        activeTab === 'code' ? 'theme' : activeTab
       ).catch(() => {});
     };
 
@@ -515,6 +694,13 @@ export const FormEditor: React.FC<FormEditorProps> = ({
               onDragEndPayload={() => setActiveDrag(null)}
               layoutMode={doc.layoutMode}
               onChangeLayoutMode={studio.updateLayoutMode}
+              reusableDefinitions={mergedReusableList}
+              onCreateReusableComponent={handleOpenCreateReusable}
+              onInsertReusableComponent={(def) => studio.insertReusableComponent(def)}
+              onEditReusableComponent={handleEditReusableDefinition}
+              onRenameReusableComponent={handleRenameReusableDefinition}
+              onDuplicateReusableComponent={handleDuplicateReusableDefinition}
+              onDeleteReusableComponent={handleRequestDeleteReusableDefinition}
               isReadOnly={isReadOnly}
             />
 
@@ -560,6 +746,11 @@ export const FormEditor: React.FC<FormEditorProps> = ({
                 if (fieldId) studio.selectComponent(fieldId);
                 setIsCoAuthorOpen(true);
               }}
+              reusableDefinitions={mergedReusableDefsMap}
+              onInsertReusableComponent={handleInsertReusableById}
+              onSaveNodeAsReusable={handleSaveNodeAsReusable}
+              onEditReusableDefinition={handleEditReusableDefinition}
+              onSyncReusableInstance={handleSyncReusableInstance}
               isReadOnly={isReadOnly}
             />
 
@@ -588,6 +779,15 @@ export const FormEditor: React.FC<FormEditorProps> = ({
               onUpdateThankYouScreen={studio.updateThankYouScreen}
               canvasViewport={studio.canvasViewport}
               onResetComponentAppearance={studio.resetComponentAppearance}
+              reusableDefinitions={mergedReusableDefsMap}
+              onSaveNodeAsReusable={handleSaveNodeAsReusable}
+              onEditReusableDefinition={handleEditReusableDefinition}
+              onUpdateReusablePropOverride={studio.updateReusablePropOverride}
+              onClearReusablePropOverride={studio.clearReusablePropOverride}
+              onUpdateReusableSlotOverride={studio.updateReusableSlotOverride}
+              onResetReusableOverrides={studio.resetReusableOverrides}
+              onSyncReusableInstance={handleSyncReusableInstance}
+              onDetachReusableInstance={studio.detachReusableInstance}
               isReadOnly={isReadOnly}
             />
 
@@ -673,6 +873,19 @@ export const FormEditor: React.FC<FormEditorProps> = ({
                       onDragEndPayload={() => setActiveDrag(null)}
                       layoutMode={doc.layoutMode}
                       onChangeLayoutMode={studio.updateLayoutMode}
+                      reusableDefinitions={mergedReusableList}
+                      onCreateReusableComponent={() => {
+                        setMobileSheet('none');
+                        handleOpenCreateReusable();
+                      }}
+                      onInsertReusableComponent={(def) => studio.insertReusableComponent(def)}
+                      onEditReusableComponent={(def) => {
+                        setMobileSheet('none');
+                        handleEditReusableDefinition(def);
+                      }}
+                      onRenameReusableComponent={handleRenameReusableDefinition}
+                      onDuplicateReusableComponent={handleDuplicateReusableDefinition}
+                      onDeleteReusableComponent={handleRequestDeleteReusableDefinition}
                       initialTab={mobileSheet}
                       isMobileDrawer={true}
                       onCloseMobile={() => setMobileSheet('none')}
@@ -706,6 +919,21 @@ export const FormEditor: React.FC<FormEditorProps> = ({
                       onUpdateThankYouScreen={studio.updateThankYouScreen}
                       canvasViewport={studio.canvasViewport}
                       onResetComponentAppearance={studio.resetComponentAppearance}
+                      reusableDefinitions={mergedReusableDefsMap}
+                      onSaveNodeAsReusable={(cid) => {
+                        setMobileSheet('none');
+                        handleSaveNodeAsReusable(cid);
+                      }}
+                      onEditReusableDefinition={(defId) => {
+                        setMobileSheet('none');
+                        handleEditReusableDefinition(defId);
+                      }}
+                      onUpdateReusablePropOverride={studio.updateReusablePropOverride}
+                      onClearReusablePropOverride={studio.clearReusablePropOverride}
+                      onUpdateReusableSlotOverride={studio.updateReusableSlotOverride}
+                      onResetReusableOverrides={studio.resetReusableOverrides}
+                      onSyncReusableInstance={handleSyncReusableInstance}
+                      onDetachReusableInstance={studio.detachReusableInstance}
                       isMobileDrawer={true}
                       onCloseMobile={() => setMobileSheet('none')}
                       isReadOnly={isReadOnly}
@@ -737,6 +965,21 @@ export const FormEditor: React.FC<FormEditorProps> = ({
             onUpdateRules={studio.updateLogicRules}
             onUpdateVariables={studio.updateVariables}
             onRenameVariable={studio.renameVariable}
+            onUpdateCrossFieldValidations={studio.updateCrossFieldValidations}
+            onUpdateScoring={studio.updateScoringConfig}
+            onUpdateOutcomes={studio.updateOutcomesConfig}
+            isReadOnly={isReadOnly}
+          />
+        )}
+
+        {activeTab === 'code' && (
+          <AdvancedCodeStudio
+            document={doc}
+            onSaveCustomCode={studio.updateCustomCode}
+            onUpdateComponent={studio.updateComponent}
+            onAddComponent={(type, targetPageId) =>
+              studio.addComponent(type, targetPageId || studio.activePageId)
+            }
             isReadOnly={isReadOnly}
           />
         )}
@@ -772,11 +1015,13 @@ export const FormEditor: React.FC<FormEditorProps> = ({
             ? `Delete "${pendingConfirm.pageTitle}"?`
             : pendingConfirm?.kind === 'delete_container'
               ? `Delete "${pendingConfirm.label}"?`
-              : pendingConfirm?.kind === 'publish_logic_errors'
-                ? `Fix ${pendingConfirm.errorCount} logic ${
-                    pendingConfirm.errorCount === 1 ? 'issue' : 'issues'
-                  } before publishing?`
-                : ''
+              : pendingConfirm?.kind === 'delete_reusable_def'
+                ? `Delete "${pendingConfirm.name}" from Library?`
+                : pendingConfirm?.kind === 'publish_logic_errors'
+                  ? `Fix ${pendingConfirm.errorCount} logic ${
+                      pendingConfirm.errorCount === 1 ? 'issue' : 'issues'
+                    } before publishing?`
+                  : ''
         }
         description={
           pendingConfirm?.kind === 'delete_page'
@@ -787,16 +1032,24 @@ export const FormEditor: React.FC<FormEditorProps> = ({
               ? `This layout container holds ${pendingConfirm.childCount} nested ${
                   pendingConfirm.childCount === 1 ? 'block' : 'blocks'
                 }. Deleting it will also remove all nested blocks inside. You can press Undo to revert.`
-              : pendingConfirm?.kind === 'publish_logic_errors'
-                ? `${pendingConfirm.firstErrorMessage} Open the Logic Builder to fix broken references or navigation loops before going live.`
-                : ''
+              : pendingConfirm?.kind === 'delete_reusable_def'
+                ? pendingConfirm.instanceCount > 0
+                  ? `${pendingConfirm.instanceCount} ${
+                      pendingConfirm.instanceCount === 1 ? 'instance' : 'instances'
+                    } on this form use this component. Deleting it removes it from your reusable library; existing instances will safely continue rendering from their embedded snapshots.`
+                  : 'This reusable component will be removed from your saved library. Existing forms using snapshots of it will not break.'
+                : pendingConfirm?.kind === 'publish_logic_errors'
+                  ? `${pendingConfirm.firstErrorMessage} Open the Logic Builder to fix broken references or navigation loops before going live.`
+                  : ''
         }
         confirmLabel={
           pendingConfirm?.kind === 'delete_page'
             ? 'Delete Page & Blocks'
             : pendingConfirm?.kind === 'delete_container'
               ? 'Delete Container'
-              : 'Review Logic Rules'
+              : pendingConfirm?.kind === 'delete_reusable_def'
+                ? 'Delete from Library'
+                : 'Review Logic Rules'
         }
         secondaryActionLabel={
           pendingConfirm?.kind === 'delete_page'
@@ -830,6 +1083,14 @@ export const FormEditor: React.FC<FormEditorProps> = ({
             studio.deletePage(pendingConfirm.pageId, { deleteComponents: true });
           } else if (pendingConfirm.kind === 'delete_container') {
             studio.removeComponent(pendingConfirm.componentId);
+          } else if (pendingConfirm.kind === 'delete_reusable_def') {
+            const updatedLib = deleteReusableComponentFromLibrary(pendingConfirm.definitionId);
+            setReusableLibrary(
+              firebaseUser?.uid
+                ? updatedLib.filter((d) => !d.ownerId || d.ownerId === firebaseUser.uid)
+                : updatedLib
+            );
+            studio.removeReusableDefinition(pendingConfirm.definitionId);
           } else if (pendingConfirm.kind === 'publish_logic_errors') {
             setActiveTab('logic');
           }
@@ -898,6 +1159,21 @@ export const FormEditor: React.FC<FormEditorProps> = ({
             { action: 'ai_updated', summary: 'Updated form questions with AI Helper' }
           );
         }}
+      />
+
+      {/* Phase 3.2: Visual Reusable Component Builder Modal */}
+      <ReusableComponentBuilderModal
+        isOpen={reusableBuilderState.isOpen}
+        initialDefinition={reusableBuilderState.editingDef}
+        document={doc}
+        ownerId={firebaseUser?.uid}
+        linkedInstanceCount={
+          reusableBuilderState.editingDef
+            ? listInstanceIdsForDefinition(doc, reusableBuilderState.editingDef.id).length
+            : 0
+        }
+        onClose={() => setReusableBuilderState({ isOpen: false, editingDef: null })}
+        onSave={handleSaveReusableDefinition}
       />
     </div>
   );

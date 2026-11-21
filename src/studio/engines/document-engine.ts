@@ -9,14 +9,18 @@
 import { FormSettings, FormThankYouScreen, FormWelcomeScreen } from '../../types/form';
 import {
   CrossFieldValidationRule,
+  CUSTOM_CODE_SCHEMA_VERSION,
   FormComponentNode,
   FormComponentType,
+  FormCustomCodeConfig,
   FormDesignConfig,
   FormDocument,
   FormOutcomeConfig,
   FormPage,
   FormScoringConfig,
   FormVariableDefinition,
+  ReusableComponentDefinition,
+  ReusableSlotOverride,
 } from '../document/types';
 import { ComponentRegistry, CreateNodeOverrides } from '../registry/ComponentRegistry';
 import { formComponentRegistry } from '../registry/builtin-components';
@@ -24,6 +28,12 @@ import { ComponentNodePatch } from '../registry/types';
 import { createDefaultDesign } from './theme-presets';
 import { AnyLogicRule } from '../logic/types';
 import { isSimpleSingleComponentRule, serializeStudioLogicRule } from '../logic/migration';
+import {
+  cloneReusableDefinition,
+  coerceReusablePropValue,
+  createReusableInstanceConfig,
+  isSafeReusableUrl,
+} from './reusable-component-engine';
 
 /**
  * Maximum nesting depth for components inside layout containers.
@@ -480,6 +490,11 @@ function cloneNodeTree(
         ? { ...original.validation.customMessages }
         : undefined,
     },
+    ...(original.reusableInstance
+      ? {
+          reusableInstance: JSON.parse(JSON.stringify(original.reusableInstance)),
+        }
+      : {}),
   };
 
   return newId;
@@ -1317,3 +1332,433 @@ export function updateOutcomesConfig(
     metadata: touchMetadata(doc),
   };
 }
+
+export function updateCustomCode(
+  doc: FormDocument,
+  customCode: FormCustomCodeConfig
+): FormDocument {
+  const normalized: FormCustomCodeConfig = {
+    schemaVersion: CUSTOM_CODE_SCHEMA_VERSION,
+    css: {
+      enabled: Boolean(customCode.css?.enabled),
+      code: customCode.css?.code || '',
+    },
+    js: {
+      enabled: Boolean(customCode.js?.enabled),
+      code: customCode.js?.code || '',
+      timeoutMs: customCode.js?.timeoutMs,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  return {
+    ...doc,
+    customCode: normalized,
+    metadata: touchMetadata(doc),
+  };
+}
+
+// ============================================================================
+// Reusable Component Operations (Phase 3.2)
+// ============================================================================
+
+/**
+ * Registers or updates a ReusableComponentDefinition inside `doc.componentDefinitions`.
+ * Does NOT silently overwrite existing instances' pinned snapshots or local overrides.
+ */
+export function upsertReusableDefinitionInDoc(
+  doc: FormDocument,
+  definition: ReusableComponentDefinition
+): FormDocument {
+  return {
+    ...doc,
+    componentDefinitions: {
+      ...(doc.componentDefinitions || {}),
+      [definition.id]: cloneReusableDefinition(definition),
+    },
+    metadata: touchMetadata(doc),
+  };
+}
+
+/**
+ * Removes a ReusableComponentDefinition from `doc.componentDefinitions`.
+ * Existing instances keep their `fallbackDefinition` snapshot so forms never crash.
+ */
+export function removeReusableDefinitionFromDoc(
+  doc: FormDocument,
+  definitionId: string
+): FormDocument {
+  if (!doc.componentDefinitions || !doc.componentDefinitions[definitionId]) return doc;
+  const nextDefs = { ...doc.componentDefinitions };
+  delete nextDefs[definitionId];
+  return {
+    ...doc,
+    componentDefinitions: nextDefs,
+    metadata: touchMetadata(doc),
+  };
+}
+
+/**
+ * Inserts a new `reusable_instance` node onto the requested page/container,
+ * embedding the definition into `doc.componentDefinitions` and pinning an initial
+ * snapshot on the instance for graceful offline/deletion resilience.
+ */
+export function insertReusableComponentInstance(
+  doc: FormDocument,
+  definition: ReusableComponentDefinition,
+  pageId?: string,
+  options?: AddComponentOptions,
+  registry: ComponentRegistry = formComponentRegistry
+): { doc: FormDocument; componentId: string } {
+  const docWithDef = upsertReusableDefinitionInDoc(doc, definition);
+  const { doc: docWithNode, componentId } = addComponent(
+    docWithDef,
+    'reusable_instance',
+    pageId,
+    {
+      ...options,
+      content: {
+        label: definition.name,
+        ...(options?.content || {}),
+      },
+      layout: {
+        width: definition.rootLayout.width || 'full',
+        ...(options?.layout || {}),
+      },
+    },
+    registry
+  );
+
+  const inserted = docWithNode.components[componentId];
+  if (!inserted) return { doc: docWithNode, componentId };
+
+  const instanceConfig = createReusableInstanceConfig(definition);
+
+  return {
+    doc: {
+      ...docWithNode,
+      components: {
+        ...docWithNode.components,
+        [componentId]: {
+          ...inserted,
+          reusableInstance: instanceConfig,
+        },
+      },
+      metadata: touchMetadata(docWithNode),
+    },
+    componentId,
+  };
+}
+
+/**
+ * Updates a single exposed typed property override on ONE reusable instance only.
+ * Never modifies the master definition or sibling instances.
+ */
+export function updateReusableInstancePropOverride(
+  doc: FormDocument,
+  instanceId: string,
+  propKey: string,
+  rawValue: unknown,
+  externalDefinitions?: Record<string, ReusableComponentDefinition>
+): { doc: FormDocument; error?: string } {
+  const node = doc.components[instanceId];
+  if (!node || node.type !== 'reusable_instance' || !node.reusableInstance) {
+    return { doc };
+  }
+
+  const def =
+    node.reusableInstance.fallbackDefinition ||
+    doc.componentDefinitions?.[node.reusableInstance.definitionId] ||
+    externalDefinitions?.[node.reusableInstance.definitionId];
+
+  const propDef = def?.props.find((p) => p.key === propKey);
+  if (propDef) {
+    const check = coerceReusablePropValue(propDef, rawValue);
+    if (!check.valid) {
+      return { doc, error: check.error };
+    }
+    rawValue = check.value;
+  }
+
+  const nextOverrides = {
+    ...(node.reusableInstance.propOverrides || {}),
+    [propKey]: rawValue as string | number | boolean,
+  };
+
+  return {
+    doc: {
+      ...doc,
+      components: {
+        ...doc.components,
+        [instanceId]: {
+          ...node,
+          reusableInstance: {
+            ...node.reusableInstance,
+            propOverrides: nextOverrides,
+          },
+        },
+      },
+      metadata: touchMetadata(doc),
+    },
+  };
+}
+
+/**
+ * Clears one exposed property override on a single instance (falling back to master default).
+ */
+export function clearReusableInstancePropOverride(
+  doc: FormDocument,
+  instanceId: string,
+  propKey: string
+): FormDocument {
+  const node = doc.components[instanceId];
+  if (!node || node.type !== 'reusable_instance' || !node.reusableInstance) return doc;
+  if (!Object.prototype.hasOwnProperty.call(node.reusableInstance.propOverrides, propKey)) {
+    return doc;
+  }
+
+  const nextOverrides = { ...node.reusableInstance.propOverrides };
+  delete nextOverrides[propKey];
+
+  return {
+    ...doc,
+    components: {
+      ...doc.components,
+      [instanceId]: {
+        ...node,
+        reusableInstance: {
+          ...node.reusableInstance,
+          propOverrides: nextOverrides,
+        },
+      },
+    },
+    metadata: touchMetadata(doc),
+  };
+}
+
+/**
+ * Applies a local per-slot content/styling/visibility override on ONE instance only.
+ */
+export function updateReusableInstanceSlotOverride(
+  doc: FormDocument,
+  instanceId: string,
+  slotId: string,
+  patch: ReusableSlotOverride
+): FormDocument {
+  const node = doc.components[instanceId];
+  if (!node || node.type !== 'reusable_instance' || !node.reusableInstance) return doc;
+
+  const existingSlotOverride = node.reusableInstance.slotOverrides?.[slotId] || {};
+  const nextContent = patch.content
+    ? { ...(existingSlotOverride.content || {}), ...patch.content }
+    : existingSlotOverride.content;
+
+  if (nextContent?.buttonUrl && !isSafeReusableUrl(nextContent.buttonUrl)) {
+    delete nextContent.buttonUrl;
+  }
+  if (nextContent?.mediaUrl && !isSafeReusableUrl(nextContent.mediaUrl)) {
+    delete nextContent.mediaUrl;
+  }
+  if (nextContent?.videoUrl && !isSafeReusableUrl(nextContent.videoUrl)) {
+    delete nextContent.videoUrl;
+  }
+
+  const mergedSlotOverride: ReusableSlotOverride = {
+    ...existingSlotOverride,
+    ...patch,
+    content: nextContent,
+    appearance: patch.appearance
+      ? { ...(existingSlotOverride.appearance || {}), ...patch.appearance }
+      : existingSlotOverride.appearance,
+    layout: patch.layout
+      ? { ...(existingSlotOverride.layout || {}), ...patch.layout }
+      : existingSlotOverride.layout,
+    validation: patch.validation
+      ? { ...(existingSlotOverride.validation || {}), ...patch.validation }
+      : existingSlotOverride.validation,
+  };
+
+  return {
+    ...doc,
+    components: {
+      ...doc.components,
+      [instanceId]: {
+        ...node,
+        reusableInstance: {
+          ...node.reusableInstance,
+          slotOverrides: {
+            ...(node.reusableInstance.slotOverrides || {}),
+            [slotId]: mergedSlotOverride,
+          },
+        },
+      },
+    },
+    metadata: touchMetadata(doc),
+  };
+}
+
+/**
+ * Resets either a single slot override or ALL local overrides on a reusable instance.
+ */
+export function resetReusableInstanceOverrides(
+  doc: FormDocument,
+  instanceId: string,
+  slotId?: string
+): FormDocument {
+  const node = doc.components[instanceId];
+  if (!node || node.type !== 'reusable_instance' || !node.reusableInstance) return doc;
+
+  if (slotId) {
+    const nextSlotOverrides = { ...(node.reusableInstance.slotOverrides || {}) };
+    delete nextSlotOverrides[slotId];
+    return {
+      ...doc,
+      components: {
+        ...doc.components,
+        [instanceId]: {
+          ...node,
+          reusableInstance: {
+            ...node.reusableInstance,
+            slotOverrides: nextSlotOverrides,
+          },
+        },
+      },
+      metadata: touchMetadata(doc),
+    };
+  }
+
+  return {
+    ...doc,
+    components: {
+      ...doc.components,
+      [instanceId]: {
+        ...node,
+        appearance: {},
+        reusableInstance: {
+          ...node.reusableInstance,
+          propOverrides: {},
+          slotOverrides: {},
+        },
+      },
+    },
+    metadata: touchMetadata(doc),
+  };
+}
+
+/**
+ * Explicitly synchronises a single linked reusable instance to a newer master definition.
+ * - When `preserveOverrides: true`, keeps all local prop & slot overrides for keys/slots
+ *   that still exist in the updated definition while pulling in new/non-overridden structure & styling.
+ * - When `preserveOverrides: false`, resets overrides cleanly to match the latest master definition.
+ */
+export function syncReusableInstance(
+  doc: FormDocument,
+  instanceId: string,
+  latestDefinition: ReusableComponentDefinition,
+  options: { preserveOverrides: boolean } = { preserveOverrides: true }
+): FormDocument {
+  const node = doc.components[instanceId];
+  if (!node || node.type !== 'reusable_instance' || !node.reusableInstance) return doc;
+  if (node.reusableInstance.definitionId !== latestDefinition.id) return doc;
+
+  const validPropKeys = new Set(latestDefinition.props.map((p) => p.key));
+  const validSlotIds = new Set(Object.keys(latestDefinition.slots));
+
+  const nextPropOverrides: Record<string, string | number | boolean> = {};
+  const nextSlotOverrides: Record<string, ReusableSlotOverride> = {};
+
+  if (options.preserveOverrides) {
+    for (const [key, val] of Object.entries(node.reusableInstance.propOverrides || {})) {
+      if (validPropKeys.has(key)) {
+        nextPropOverrides[key] = val;
+      }
+    }
+    for (const [sid, override] of Object.entries(node.reusableInstance.slotOverrides || {})) {
+      if (validSlotIds.has(sid)) {
+        nextSlotOverrides[sid] = JSON.parse(JSON.stringify(override));
+      }
+    }
+  }
+
+  const nextDoc = upsertReusableDefinitionInDoc(doc, latestDefinition);
+
+  return {
+    ...nextDoc,
+    components: {
+      ...nextDoc.components,
+      [instanceId]: {
+        ...node,
+        content: {
+          ...node.content,
+          label: latestDefinition.name,
+        },
+        reusableInstance: {
+          ...node.reusableInstance,
+          definitionVersion: latestDefinition.version,
+          definitionNameSnapshot: latestDefinition.name,
+          syncMode: 'linked',
+          propOverrides: nextPropOverrides,
+          slotOverrides: nextSlotOverrides,
+          fallbackDefinition: cloneReusableDefinition(latestDefinition),
+        },
+      },
+    },
+    metadata: touchMetadata(nextDoc),
+  };
+}
+
+/**
+ * Explicitly updates all linked (non-detached) instances of a reusable definition in the document.
+ * Preserves per-instance overrides by default so customised instances are never silently overwritten.
+ */
+export function syncAllReusableInstancesForDefinition(
+  doc: FormDocument,
+  latestDefinition: ReusableComponentDefinition,
+  options: { preserveOverrides: boolean } = { preserveOverrides: true }
+): FormDocument {
+  let nextDoc = upsertReusableDefinitionInDoc(doc, latestDefinition);
+  for (const node of Object.values(doc.components)) {
+    if (
+      node.type === 'reusable_instance' &&
+      node.reusableInstance?.definitionId === latestDefinition.id &&
+      node.reusableInstance.syncMode === 'linked'
+    ) {
+      nextDoc = syncReusableInstance(nextDoc, node.id, latestDefinition, options);
+    }
+  }
+  return nextDoc;
+}
+
+/**
+ * Detaches an instance from its master definition so future updates or library edits
+ * will never offer or apply changes to this instance.
+ */
+export function detachReusableInstance(
+  doc: FormDocument,
+  instanceId: string,
+  externalDefinitions?: Record<string, ReusableComponentDefinition>
+): FormDocument {
+  const node = doc.components[instanceId];
+  if (!node || node.type !== 'reusable_instance' || !node.reusableInstance) return doc;
+
+  const snapshot =
+    node.reusableInstance.fallbackDefinition ||
+    doc.componentDefinitions?.[node.reusableInstance.definitionId] ||
+    externalDefinitions?.[node.reusableInstance.definitionId];
+
+  return {
+    ...doc,
+    components: {
+      ...doc.components,
+      [instanceId]: {
+        ...node,
+        reusableInstance: {
+          ...node.reusableInstance,
+          syncMode: 'detached',
+          fallbackDefinition: snapshot ? cloneReusableDefinition(snapshot) : undefined,
+        },
+      },
+    },
+    metadata: touchMetadata(doc),
+  };
+}
+

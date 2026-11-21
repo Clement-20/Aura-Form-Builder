@@ -20,11 +20,15 @@ import {
   FilePlus,
   PencilSimple,
   EyeSlash,
+  Cube,
+  ArrowsClockwise,
 } from '@phosphor-icons/react';
 import { FormSchema, FormLayoutMode } from '../../types/form';
 import { CollaboratorPresence, FormComment } from '../../types/team';
 import {
+  buildFormCssScopeId,
   CanvasViewport,
+  compileDocumentCustomCss,
   ComponentNodePatch,
   FormComponentNode,
   FormComponentType,
@@ -42,6 +46,8 @@ import {
   resolveComponentTokens,
   resolveContainerColumns,
   resolveDesignTokens,
+  resolveReusableInstance,
+  ReusableComponentDefinition,
   SelectionTarget,
 } from '../../studio';
 import {
@@ -94,6 +100,19 @@ interface EditorCanvasProps {
   currentUserId?: string;
   comments?: FormComment[];
   onOpenCoAuthor?: (componentId?: string) => void;
+  reusableDefinitions?: Record<string, ReusableComponentDefinition>;
+  onInsertReusableComponent?: (
+    definitionId: string,
+    pageId: string,
+    options?: { parentId?: string | null; insertAtIndex?: number }
+  ) => void;
+  onSaveNodeAsReusable?: (componentId: string) => void;
+  onEditReusableDefinition?: (definitionId: string) => void;
+  onSyncReusableInstance?: (
+    instanceId: string,
+    definitionId: string,
+    preserveOverrides: boolean
+  ) => void;
   isReadOnly?: boolean;
 }
 
@@ -139,6 +158,11 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
   currentUserId,
   comments = [],
   onOpenCoAuthor,
+  reusableDefinitions,
+  onInsertReusableComponent,
+  onSaveNodeAsReusable,
+  onEditReusableDefinition,
+  onSyncReusableInstance,
   isReadOnly = false,
 }) => {
   const [dropSlotKey, setDropSlotKey] = useState<string | null>(null);
@@ -152,6 +176,19 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
     [document.design, canvasViewport]
   );
   const primaryColor = tokens.colors.primary;
+
+  const canvasScopeId = useMemo(
+    () => buildFormCssScopeId(document.id, 'editor_canvas'),
+    [document.id]
+  );
+  const compiledCanvasCss = useMemo(
+    () =>
+      compileDocumentCustomCss(document, {
+        scopeId: canvasScopeId,
+        previewViewport: canvasViewport,
+      }),
+    [document, canvasScopeId, canvasViewport]
+  );
 
   const pagesToRender: FormPage[] = useMemo(() => {
     if (viewAllPages) return document.pages;
@@ -210,6 +247,11 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
         parentId,
         insertAtIndex: index,
       });
+    } else if (payload.kind === 'reusable') {
+      onInsertReusableComponent?.(payload.definitionId, pageId, {
+        parentId,
+        insertAtIndex: index,
+      });
     } else {
       onMoveComponent(payload.componentId, {
         pageId,
@@ -239,6 +281,11 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
     const childCount = container.children?.length || 0;
     if (payload.kind === 'new') {
       onAddComponent(payload.componentType, container.pageId, {
+        parentId: container.id,
+        insertAtIndex: childCount,
+      });
+    } else if (payload.kind === 'reusable') {
+      onInsertReusableComponent?.(payload.definitionId, container.pageId, {
         parentId: container.id,
         insertAtIndex: childCount,
       });
@@ -459,6 +506,10 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
 
     const compTokens = resolveComponentTokens(node, document.design, canvasViewport);
     const appearanceClass = resolveComponentAppearanceClasses(node.appearance);
+    const reusableResolved =
+      node.type === 'reusable_instance'
+        ? resolveReusableInstance(node, reusableDefinitions || document.componentDefinitions, canvasViewport)
+        : null;
 
     const dragPayload: StudioDragPayload = {
       kind: 'existing',
@@ -475,13 +526,15 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
     return (
       <div
         key={node.id}
+        data-fs-component={node.id}
+        data-fs-type={node.type}
         onClick={(e) => {
           e.stopPropagation();
           setPopoverTarget(null);
           onSelectTarget({ kind: 'component', id: node.id });
         }}
         style={blockStyle}
-        className={`group/block relative rounded-xl transition-all ${
+        className={`fs-field group/block relative rounded-xl transition-all ${
           isBeingDragged ? 'opacity-40 scale-[0.99]' : ''
         } ${compTokens.isHidden ? 'opacity-45' : ''} ${
           isContainer ? 'p-4 border border-dashed' : 'p-4 border'
@@ -550,9 +603,48 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
                 className="text-[#0F766E] shrink-0"
               />
               <span className="font-mono text-[10px] uppercase tracking-wider truncate">
-                {def?.shortLabel || node.type}
+                {reusableResolved?.definition?.name || def?.shortLabel || node.type}
               </span>
             </span>
+
+            {reusableResolved && (
+              <>
+                <span className="text-[10px] font-mono text-[#0F766E]">
+                  · v{reusableResolved.activeVersion}
+                </span>
+                {reusableResolved.status === 'update_available' &&
+                  reusableResolved.definition &&
+                  !isReadOnly &&
+                  onSyncReusableInstance && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSyncReusableInstance(
+                          node.id,
+                          reusableResolved.definition!.id,
+                          true
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 font-mono text-[9px] font-semibold transition-colors"
+                      title="Pull latest definition updates while preserving local instance customisations"
+                    >
+                      <ArrowsClockwise size={10} weight="bold" />
+                      <span>Update → v{reusableResolved.latestVersion}</span>
+                    </button>
+                  )}
+                {reusableResolved.status === 'detached' && (
+                  <span className="px-1.5 py-0.5 rounded bg-black/[0.06] text-[#5C6066] font-mono text-[9px] font-semibold uppercase">
+                    Detached
+                  </span>
+                )}
+                {reusableResolved.status === 'missing_definition' && (
+                  <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 font-mono text-[9px] font-semibold uppercase">
+                    {reusableResolved.definition ? 'Snapshot' : 'Unavailable'}
+                  </span>
+                )}
+              </>
+            )}
 
             {isContainer && (
               <span className="text-[10px] font-mono text-[#0F766E]">
@@ -577,6 +669,32 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
           <div className="flex items-center gap-0.5 shrink-0">
             {!isReadOnly && (
               <>
+                {node.type !== 'reusable_instance' && onSaveNodeAsReusable && (
+                  <button
+                    type="button"
+                    onClick={() => onSaveNodeAsReusable(node.id)}
+                    className="h-6 px-1.5 rounded-md hover:bg-[#0F766E]/10 text-[#5C6066] hover:text-[#0F766E] text-[10px] font-semibold flex items-center gap-1 transition-colors"
+                    title="Save this block as a reusable component"
+                    aria-label="Save as reusable component"
+                  >
+                    <Cube size={12} weight="regular" />
+                    <span className="hidden xl:inline">Reuse</span>
+                  </button>
+                )}
+                {node.type === 'reusable_instance' &&
+                  reusableResolved?.definition &&
+                  onEditReusableDefinition && (
+                    <button
+                      type="button"
+                      onClick={() => onEditReusableDefinition(reusableResolved.definition!.id)}
+                      className="h-6 px-1.5 rounded-md hover:bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold flex items-center gap-1 transition-colors"
+                      title="Edit master reusable component definition"
+                      aria-label="Edit master definition"
+                    >
+                      <Cube size={12} weight="duotone" />
+                      <span className="hidden sm:inline">Edit Master</span>
+                    </button>
+                  )}
                 {node.parentId && (
                   <button
                     type="button"
@@ -678,6 +796,7 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
               primaryColor={primaryColor}
               radiusClass={tokens.borderRadiusClass}
               viewport={canvasViewport}
+              reusableDefinitions={reusableDefinitions || document.componentDefinitions}
             />
           ) : (
             <div className="p-3 rounded-lg bg-amber-50 text-xs text-amber-900">
@@ -941,12 +1060,16 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
 
       {/* Main Visual Canvas Area */}
       <div
-        className={`relative flex-1 px-3 sm:px-6 lg:px-10 pt-6 pb-32 lg:pb-16 overflow-y-auto studio-surface ${tokens.fontFamilyClass}`}
+        data-fs-form-scope={canvasScopeId}
+        className={`fs-form relative flex-1 px-3 sm:px-6 lg:px-10 pt-6 pb-32 lg:pb-16 overflow-y-auto studio-surface ${tokens.fontFamilyClass}`}
         style={{
           ...tokens.backgroundStyle,
           ...(tokens.cssVariables as React.CSSProperties),
         }}
       >
+        {compiledCanvasCss.scopedCss && (
+          <style data-fs-custom-css={canvasScopeId}>{compiledCanvasCss.scopedCss}</style>
+        )}
         {tokens.backgroundImageUrl && (
           <>
             <img
@@ -1085,7 +1208,7 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
                   e.stopPropagation();
                   onSelectTarget({ kind: 'page', pageId: page.id });
                 }}
-                className={`${tokens.internalPaddingClass} transition-all ${tokens.borderRadiusClass} ${
+                className={`fs-card ${tokens.internalPaddingClass} transition-all ${tokens.borderRadiusClass} ${
                   isPageSelected
                     ? 'ring-2 ring-[#0F766E]/25'
                     : ''
@@ -1149,7 +1272,7 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
                       </div>
                       <div className="w-full h-1.5 rounded-full bg-black/[0.08] overflow-hidden">
                         <div
-                          className="h-full rounded-full transition-all duration-300"
+                          className="fs-progress-fill h-full rounded-full transition-all duration-300"
                           style={{
                             width: `${Math.round(
                               (page.index / Math.max(1, document.pages.length)) * 100
@@ -1243,7 +1366,7 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
                   <span className="text-[11px] font-mono opacity-65">
                     {page.index < document.pages.length ? 'Next Page button' : 'Submit button'}
                   </span>
-                  <span className={tokens.buttonClassName} style={tokens.buttonStyle}>
+                  <span className={`fs-submit-btn ${tokens.buttonClassName}`} style={tokens.buttonStyle}>
                     {page.index < document.pages.length
                       ? 'Continue'
                       : document.settings.submitButtonText || 'Submit'}

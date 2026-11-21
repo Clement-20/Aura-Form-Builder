@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ArrowCounterClockwise,
   CheckCircle,
@@ -6,19 +6,27 @@ import {
   Warning,
   WarningCircle,
   Play,
+  Eye,
   EyeSlash,
   LockSimple,
   Asterisk,
   ArrowRight,
   FlagCheckered,
   ChatText,
+  ShieldCheck,
+  Trophy,
+  Sparkle,
 } from '@phosphor-icons/react';
 import {
   FormComponentNode,
   FormDocument,
   LogicEvaluationResult,
   LogicValidationReport,
+  OutcomeEvaluationResult,
+  ScoringEvaluationResult,
+  SubmissionValidationResult,
 } from '../../studio';
+import { OutcomeResultCard } from '../../studio/engines/OutcomeResultCard';
 
 interface LogicDebuggerPanelProps {
   document: FormDocument;
@@ -28,6 +36,9 @@ interface LogicDebuggerPanelProps {
   onResetTestAnswers: () => void;
   evaluation: LogicEvaluationResult;
   validation: LogicValidationReport;
+  simulatedValidation?: SubmissionValidationResult;
+  liveScoring?: ScoringEvaluationResult;
+  liveOutcomeResult?: OutcomeEvaluationResult;
   selectedRuleId: string | null;
   onSelectRule: (ruleId: string) => void;
 }
@@ -40,9 +51,13 @@ export const LogicDebuggerPanel: React.FC<LogicDebuggerPanelProps> = ({
   onResetTestAnswers,
   evaluation,
   validation,
+  simulatedValidation,
+  liveScoring,
+  liveOutcomeResult,
   selectedRuleId,
   onSelectRule,
 }) => {
+  const [showOutcomePreview, setShowOutcomePreview] = useState(false);
   const hiddenComponents = Object.values(document.components).filter(
     (c) => !evaluation.visibleComponentIds.has(c.id)
   );
@@ -79,7 +94,7 @@ export const LogicDebuggerPanel: React.FC<LogicDebuggerPanelProps> = ({
             <span>Logic Preview &amp; Debugger</span>
           </div>
           <p className="text-[11px] text-[#5C6066] truncate">
-            Test answers live · Private to creators
+            Isolated test mode · Never saved to submissions
           </p>
         </div>
         <button
@@ -299,10 +314,179 @@ export const LogicDebuggerPanel: React.FC<LogicDebuggerPanelProps> = ({
           )}
         </section>
 
+        {/* Live Validation Check (Field & Cross-Field) */}
+        {simulatedValidation && (
+          <section className="space-y-2 pt-3 border-t border-black/[0.08]">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[11px] font-mono uppercase tracking-[0.12em] text-[#5C6066] flex items-center gap-1.5">
+                <ShieldCheck size={12} weight="duotone" className="text-[#0F766E]" />
+                <span>Simulated Validation</span>
+              </h3>
+              <span
+                className={`text-[10px] font-mono font-semibold tabular-nums ${
+                  simulatedValidation.valid ? 'text-[#0F766E]' : 'text-rose-700'
+                }`}
+              >
+                {simulatedValidation.valid
+                  ? 'Valid'
+                  : `${Object.keys(simulatedValidation.errors).length} error${
+                      Object.keys(simulatedValidation.errors).length === 1 ? '' : 's'
+                    }`}
+              </span>
+            </div>
+
+            {simulatedValidation.valid ? (
+              <div className="p-2.5 rounded-lg bg-[#0F766E]/[0.07] border border-[#0F766E]/20 text-xs text-[#0F766E] flex items-center gap-2">
+                <CheckCircle size={14} weight="fill" className="shrink-0" />
+                <span>All visible fields &amp; cross-field checks pass.</span>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {Object.entries(simulatedValidation.errors).map(([compId, errMsg]) => {
+                  const isCrossField = Boolean(simulatedValidation.crossFieldErrors?.[compId]);
+                  const label = document.components[compId]?.content.label || compId;
+                  return (
+                    <div
+                      key={`sim_err_${compId}`}
+                      className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-[11px] text-rose-800 space-y-0.5"
+                    >
+                      <div className="flex items-center justify-between gap-2 font-semibold">
+                        <span className="truncate">{label}</span>
+                        <span className="font-mono text-[9px] uppercase opacity-75 shrink-0">
+                          {isCrossField ? 'Cross-Field' : 'Field'}
+                        </span>
+                      </div>
+                      <div>{errMsg}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Live Assessment Score & Categories */}
+        {liveScoring?.enabled && (
+          <section className="space-y-2.5 pt-3 border-t border-black/[0.08]">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[11px] font-mono uppercase tracking-[0.12em] text-[#5C6066] flex items-center gap-1.5">
+                <Trophy size={12} weight="duotone" className="text-[#0F766E]" />
+                <span>Live Score</span>
+              </h3>
+              {liveScoring.totalThreshold && (
+                <span className="text-[10px] font-mono font-semibold text-[#0F766E]">
+                  {liveScoring.totalThreshold.label}
+                </span>
+              )}
+            </div>
+
+            <div className="p-3 rounded-xl bg-[#FAF9F7] border border-black/[0.08] space-y-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="font-mono text-lg font-bold text-[#0B0D0F] tabular-nums">
+                  {liveScoring.totalScore}
+                  {liveScoring.maxScore > 0 && (
+                    <span className="text-xs font-normal text-[#5C6066]">
+                      {' '}
+                      / {liveScoring.maxScore}
+                    </span>
+                  )}
+                </div>
+                <span className="font-mono text-xs font-semibold text-[#0F766E] tabular-nums">
+                  {liveScoring.percent}%
+                </span>
+              </div>
+
+              {liveScoring.categories.length > 0 && (
+                <div className="space-y-1.5 pt-2 border-t border-black/[0.06]">
+                  {liveScoring.categories.map((cat) => (
+                    <div key={cat.categoryId} className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-medium text-[#0B0D0F] truncate">
+                          {cat.name}
+                          {cat.threshold ? ` · ${cat.threshold.label}` : ''}
+                        </span>
+                        <span className="font-mono text-[#5C6066] tabular-nums shrink-0">
+                          {cat.score}
+                          {cat.maxScore > 0 ? `/${cat.maxScore}` : ''} ({cat.percent}%)
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-black/[0.06] overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${Math.max(0, Math.min(100, cat.percent))}%`,
+                            backgroundColor: cat.color || '#0F766E',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Live Matched Personalised Outcome */}
+        {liveOutcomeResult?.enabled && (
+          <section className="space-y-2 pt-3 border-t border-black/[0.08]">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-[11px] font-mono uppercase tracking-[0.12em] text-[#5C6066] flex items-center gap-1.5">
+                <Sparkle size={12} weight="duotone" className="text-[#0F766E]" />
+                <span>Personalised Outcome</span>
+              </h3>
+              {liveOutcomeResult.selectedOutcome && (
+                <button
+                  type="button"
+                  onClick={() => setShowOutcomePreview((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F766E] hover:underline whitespace-nowrap"
+                >
+                  <Eye size={12} />
+                  <span>{showOutcomePreview ? 'Hide Screen' : 'Preview Screen'}</span>
+                </button>
+              )}
+            </div>
+
+            {liveOutcomeResult.selectedOutcome ? (
+              <div className="space-y-2">
+                <div className="p-2.5 rounded-lg bg-[#0F766E]/[0.07] border border-[#0F766E]/25 text-xs space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-[#0B0D0F] truncate">
+                      {liveOutcomeResult.selectedOutcome.outcomeName}
+                    </span>
+                    <span className="font-mono text-[10px] text-[#0F766E] shrink-0">
+                      {liveOutcomeResult.selectedOutcome.isDefaultFallback ? 'Fallback' : 'Matched'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-[#5C6066] truncate">
+                    {liveOutcomeResult.selectedOutcome.heading}
+                  </div>
+                </div>
+
+                {showOutcomePreview && (
+                  <div className="rounded-xl border border-black/[0.08] overflow-hidden bg-[#F7F6F3] p-2">
+                    <OutcomeResultCard
+                      outcome={liveOutcomeResult.selectedOutcome}
+                      scoring={liveScoring}
+                      design={document.design}
+                      compact
+                      isPreview
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-[#5C6066] bg-[#FAF9F7] rounded-lg p-2.5 border border-black/[0.06]">
+                No outcome matched yet. Configure a fallback outcome to guarantee a result screen.
+              </p>
+            )}
+          </section>
+        )}
+
         {/* Live Outcome Summary */}
         <section className="space-y-2.5 pt-3 border-t border-black/[0.08]">
           <h3 className="text-[11px] font-mono uppercase tracking-[0.12em] text-[#5C6066]">
-            Live Form Outcome
+            Live Logic Effects
           </h3>
 
           <div className="space-y-2 text-xs">

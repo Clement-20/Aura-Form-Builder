@@ -43,6 +43,12 @@ import {
   Plus,
   Trash,
   Check,
+  Code,
+  ShieldCheck,
+  CursorClick,
+  Cube,
+  ArrowSquareOut,
+  WarningCircle,
 } from '@phosphor-icons/react';
 import { ComponentRegistry } from './ComponentRegistry';
 import {
@@ -58,6 +64,15 @@ import {
 } from '../engines/design-engine';
 import { DEFAULT_STUDIO_DESIGN } from '../engines/theme-presets';
 import { normalizeUploadedFiles } from '../engines/validation-engine';
+import {
+  HTML_EXAMPLE_SNIPPETS,
+  SafeHtmlContent,
+  sanitizeCustomHtml,
+} from '../engines/custom-html-engine';
+import {
+  isSafeReusableUrl,
+  resolveReusableInstance,
+} from '../engines/reusable-component-engine';
 
 // ============================================================================
 // Video URL Embed Helper
@@ -717,6 +732,72 @@ const ContainerHeaderEditor: React.FC<EditorComponentRenderProps> = ({
 // ============================================================================
 // Respondent Renderers (used by Rendering Engine — 1:1 token fidelity)
 // ============================================================================
+
+const CustomHtmlBlockEditor: React.FC<EditorComponentRenderProps> = ({
+  node,
+  design,
+  viewport = 'desktop',
+}) => {
+  const effectiveDesign = design || DEFAULT_STUDIO_DESIGN;
+  const ct = resolveComponentTokens(node, effectiveDesign, viewport);
+  const rawHtml = node.content.htmlContent || '';
+  const sanitized = React.useMemo(() => sanitizeCustomHtml(rawHtml), [rawHtml]);
+  const issueCount = sanitized.errors.length + sanitized.warnings.length;
+
+  return (
+    <div className="space-y-2.5" style={{ fontFamily: ct.bodyStyle.fontFamily }}>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-[#5C6066]">
+        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-[#0F766E]">
+          <ShieldCheck size={13} weight="bold" />
+          <span>Sanitized HTML Preview</span>
+        </span>
+        <div className="flex items-center gap-2 font-mono text-[10px]">
+          {issueCount > 0 && (
+            <span className="text-amber-700 font-semibold">
+              {issueCount} stripped
+            </span>
+          )}
+          <span className="opacity-70">Edit in Inspector or Code tab</span>
+        </div>
+      </div>
+
+      {rawHtml.trim() ? (
+        <div
+          className="rounded-lg border border-black/[0.06] bg-white/70 p-3"
+          style={{ textAlign: ct.effectiveAlign }}
+        >
+          <SafeHtmlContent html={rawHtml} />
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-black/[0.14] bg-[#FAF9F7] px-4 py-5 text-center text-xs text-[#5C6066]">
+          Empty Custom HTML block. Select this block to write HTML in the Inspector or open the Code tab.
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CustomHtmlRespondent: React.FC<RespondentComponentRenderProps> = ({
+  node,
+  design,
+  viewport = 'desktop',
+}) => {
+  const ct = resolveComponentTokens(node, design, viewport);
+  const rawHtml = node.content.htmlContent || '';
+  if (!rawHtml.trim()) return null;
+
+  return (
+    <div
+      style={{
+        color: ct.bodyStyle.color,
+        fontFamily: ct.bodyStyle.fontFamily,
+        textAlign: ct.effectiveAlign,
+      }}
+    >
+      <SafeHtmlContent html={rawHtml} />
+    </div>
+  );
+};
 
 const FieldHeader: React.FC<{
   node: FormComponentNode;
@@ -1590,6 +1671,405 @@ const ContainerRespondent: React.FC<RespondentComponentRenderProps> = ({
 };
 
 // ============================================================================
+// Button / Link Block (Safe URL-validated CTA / Link building block)
+// ============================================================================
+
+const ButtonLinkBlockEditor: React.FC<EditorComponentRenderProps> = ({
+  node,
+  onUpdate,
+  isReadOnly,
+  design = DEFAULT_STUDIO_DESIGN,
+  viewport = 'desktop',
+}) => {
+  const ct = resolveComponentTokens(node, design, viewport);
+  const variant = node.content.buttonVariant || 'primary';
+  const alignClass =
+    node.appearance.textAlign === 'center'
+      ? 'justify-center'
+      : node.appearance.textAlign === 'right'
+      ? 'justify-end'
+      : 'justify-start';
+  const safeUrl = node.content.buttonUrl && isSafeReusableUrl(node.content.buttonUrl);
+
+  const btnStyle: React.CSSProperties =
+    variant === 'primary'
+      ? {
+          backgroundColor: node.appearance.buttonBackgroundColor || ct.accentColor,
+          color: node.appearance.buttonTextColor || '#FFFFFF',
+          borderColor: 'transparent',
+        }
+      : variant === 'secondary'
+      ? {
+          backgroundColor: node.appearance.buttonBackgroundColor || '#F3F4F6',
+          color: node.appearance.buttonTextColor || '#111827',
+          borderColor: node.appearance.buttonBorderColor || '#E5E7EB',
+        }
+      : {
+          backgroundColor: 'transparent',
+          color: node.appearance.buttonTextColor || ct.accentColor,
+          borderColor: node.appearance.buttonBorderColor || ct.accentColor,
+        };
+
+  return (
+    <div className="space-y-1.5">
+      <div className={`flex items-center ${alignClass}`}>
+        <div
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-semibold"
+          style={btnStyle}
+        >
+          <input
+            type="text"
+            value={node.content.label}
+            disabled={isReadOnly}
+            onChange={(e) => onUpdate({ content: { label: e.target.value } })}
+            placeholder="Button label..."
+            className="bg-transparent focus:outline-none min-w-[80px] text-center"
+            style={{ color: btnStyle.color }}
+          />
+          {node.content.buttonOpenInNewTab && <ArrowSquareOut size={13} weight="bold" />}
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-[11px] text-[#7A7E87]">
+        <span className="truncate font-mono">
+          {node.content.buttonUrl
+            ? safeUrl
+              ? node.content.buttonUrl
+              : 'Blocked unsafe URL (use https:// or mailto:)'
+            : 'Set target URL in the inspector →'}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+const ButtonLinkRespondent: React.FC<RespondentComponentRenderProps> = ({
+  node,
+  design,
+  radiusClass,
+  viewport = 'desktop',
+}) => {
+  const ct = resolveComponentTokens(node, design, viewport);
+  const variant = node.content.buttonVariant || 'primary';
+  const alignClass =
+    node.appearance.textAlign === 'center'
+      ? 'justify-center'
+      : node.appearance.textAlign === 'right'
+      ? 'justify-end'
+      : 'justify-start';
+  const rawUrl = node.content.buttonUrl?.trim();
+  const safeHref = rawUrl && isSafeReusableUrl(rawUrl) ? rawUrl : undefined;
+
+  const btnStyle: React.CSSProperties =
+    variant === 'primary'
+      ? {
+          backgroundColor: node.appearance.buttonBackgroundColor || ct.accentColor,
+          color: node.appearance.buttonTextColor || '#FFFFFF',
+          borderColor: 'transparent',
+        }
+      : variant === 'secondary'
+      ? {
+          backgroundColor: node.appearance.buttonBackgroundColor || 'rgba(15, 23, 42, 0.06)',
+          color: node.appearance.buttonTextColor || ct.headingStyle.color,
+          borderColor: node.appearance.buttonBorderColor || 'rgba(15, 23, 42, 0.14)',
+        }
+      : {
+          backgroundColor: 'transparent',
+          color: node.appearance.buttonTextColor || ct.accentColor,
+          borderColor: node.appearance.buttonBorderColor || ct.accentColor,
+        };
+
+  const fullWidthClass = node.appearance.buttonFullWidth ? 'w-full justify-center' : '';
+
+  if (safeHref) {
+    return (
+      <div className={`flex items-center ${alignClass}`}>
+        <a
+          href={safeHref}
+          target={node.content.buttonOpenInNewTab ? '_blank' : undefined}
+          rel={node.content.buttonOpenInNewTab ? 'noopener noreferrer' : undefined}
+          className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border transition-opacity hover:opacity-90 ${radiusClass} ${fullWidthClass}`}
+          style={btnStyle}
+        >
+          <span>{node.content.label || 'Learn more'}</span>
+          {node.content.buttonOpenInNewTab && <ArrowSquareOut size={14} weight="bold" />}
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex items-center ${alignClass}`}>
+      <span
+        className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border opacity-75 ${radiusClass} ${fullWidthClass}`}
+        style={btnStyle}
+      >
+        {node.content.label || 'Action Button'}
+      </span>
+    </div>
+  );
+};
+
+// ============================================================================
+// Reusable Component Instance Renderers (Phase 3.2)
+// Reuses formComponentRegistry directly — zero parallel rendering system.
+// ============================================================================
+
+function getReusableContainerPadding(padding?: string): string {
+  switch (padding) {
+    case 'none':
+      return 'p-0';
+    case 'sm':
+      return 'p-3';
+    case 'lg':
+      return 'p-6';
+    case 'md':
+    default:
+      return 'p-4';
+  }
+}
+
+function getReusableGapClass(gap?: string): string {
+  switch (gap) {
+    case 'none':
+      return 'gap-0';
+    case 'sm':
+      return 'gap-2.5';
+    case 'lg':
+      return 'gap-6';
+    case 'md':
+    default:
+      return 'gap-4';
+  }
+}
+
+function getReusableRadiusClass(radius?: string, fallback = 'rounded-xl'): string {
+  switch (radius) {
+    case 'none':
+      return 'rounded-none';
+    case 'sm':
+      return 'rounded-md';
+    case 'md':
+      return 'rounded-xl';
+    case 'lg':
+      return 'rounded-2xl';
+    case 'full':
+      return 'rounded-3xl';
+    default:
+      return fallback;
+  }
+}
+
+function getReusableShadowClass(shadow?: string): string {
+  switch (shadow) {
+    case 'sm':
+      return 'shadow-sm';
+    case 'md':
+      return 'shadow-md';
+    case 'lg':
+      return 'shadow-lg';
+    default:
+      return '';
+  }
+}
+
+const ReusableInstanceEditor: React.FC<EditorComponentRenderProps> = ({
+  node,
+  design = DEFAULT_STUDIO_DESIGN,
+  primaryColor = '#0F766E',
+  radiusClass = 'rounded-xl',
+  viewport = 'desktop',
+  reusableDefinitions,
+}) => {
+  const resolved = resolveReusableInstance(node, reusableDefinitions, viewport);
+
+  if (!resolved.definition) {
+    return (
+      <div className="p-4 rounded-xl border border-dashed border-amber-300 bg-amber-50/70 text-amber-900 space-y-1">
+        <div className="flex items-center gap-2 text-xs font-semibold">
+          <WarningCircle size={15} weight="fill" className="text-amber-600 shrink-0" />
+          <span>Reusable definition unavailable: {resolved.definitionName}</span>
+        </div>
+        <p className="text-[11px] text-amber-800/80">
+          This reusable component was removed from the library and has no saved snapshot. You can
+          safely delete this block or replace it from your library.
+        </p>
+      </div>
+    );
+  }
+
+  if (resolved.isHidden) {
+    return (
+      <div className="px-3.5 py-2.5 rounded-xl border border-dashed border-black/[0.15] bg-black/[0.02] text-xs text-[#6B6F76] flex items-center justify-between">
+        <span className="inline-flex items-center gap-1.5 font-medium">
+          <Cube size={14} weight="duotone" />
+          <span>{resolved.definitionName}</span>
+        </span>
+        <span className="font-mono text-[10px] uppercase tracking-wider">Hidden on {viewport}</span>
+      </div>
+    );
+  }
+
+  const colsClass =
+    resolved.effectiveColumns === 3
+      ? 'grid-cols-3'
+      : resolved.effectiveColumns === 2
+      ? 'grid-cols-2'
+      : 'grid-cols-1';
+
+  const borderWidth = resolved.rootAppearance.borderWidth || '1';
+  const wrapperStyle: React.CSSProperties = {
+    backgroundColor: resolved.rootAppearance.backgroundColor || undefined,
+    borderColor: resolved.rootAppearance.borderColor || 'rgba(11, 13, 15, 0.1)',
+    borderWidth: borderWidth === '0' ? 0 : borderWidth === '2' ? 2 : 1,
+    borderStyle: borderWidth === '0' ? 'none' : 'solid',
+    color: resolved.rootAppearance.textColor || undefined,
+    textAlign: resolved.rootAppearance.textAlign || undefined,
+  };
+
+  const renderSlotPreview = (slotNodeId: string): React.ReactNode => {
+    const slotNode = resolved.nodesById[slotNodeId];
+    if (!slotNode) return null;
+    const def = formComponentRegistry.get(slotNode.type);
+    if (!def) return null;
+    const Renderer = def.RespondentRenderer;
+    const renderedChildren =
+      def.isContainer && slotNode.children?.length
+        ? slotNode.children.map((cid) => renderSlotPreview(cid))
+        : undefined;
+
+    return (
+      <div key={slotNode.id} className="min-w-0">
+        <Renderer
+          node={slotNode}
+          value=""
+          onChange={() => {}}
+          required={Boolean(slotNode.validation.required)}
+          disabled={false}
+          design={design}
+          primaryColor={primaryColor}
+          radiusClass={radiusClass}
+          viewport={viewport}
+          renderedChildren={renderedChildren}
+        />
+      </div>
+    );
+  };
+
+  return (
+    <div
+      className={`${getReusableContainerPadding(resolved.rootLayout.padding)} ${getReusableRadiusClass(
+        resolved.rootAppearance.borderRadius,
+        radiusClass
+      )} ${getReusableShadowClass(resolved.rootAppearance.shadow)} pointer-events-none select-none`}
+      style={wrapperStyle}
+    >
+      {resolved.rootNodeIds.length === 0 ? (
+        <div className="py-4 text-center text-xs text-[#7A7E87]">
+          Empty reusable component — click Edit Definition to add blocks.
+        </div>
+      ) : (
+        <div className={`grid ${colsClass} ${getReusableGapClass(resolved.rootLayout.gap)}`}>
+          {resolved.rootNodeIds.map((nid) => renderSlotPreview(nid))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ReusableInstanceRespondent: React.FC<RespondentComponentRenderProps> = ({
+  node,
+  disabled = false,
+  design,
+  primaryColor,
+  radiusClass,
+  viewport = 'desktop',
+  reusableDefinitions,
+  nestedAnswers,
+  nestedErrors,
+  onNestedChange,
+  pipeNode,
+}) => {
+  const resolved = resolveReusableInstance(node, reusableDefinitions, viewport);
+
+  // Graceful published-form resilience when a definition is unavailable
+  if (!resolved.definition || resolved.isHidden) {
+    return null;
+  }
+
+  const colsClass =
+    resolved.effectiveColumns === 3
+      ? 'grid-cols-3'
+      : resolved.effectiveColumns === 2
+      ? 'grid-cols-2'
+      : 'grid-cols-1';
+
+  const borderWidth = resolved.rootAppearance.borderWidth || '1';
+  const wrapperStyle: React.CSSProperties = {
+    backgroundColor: resolved.rootAppearance.backgroundColor || undefined,
+    borderColor: resolved.rootAppearance.borderColor || 'rgba(11, 13, 15, 0.1)',
+    borderWidth: borderWidth === '0' ? 0 : borderWidth === '2' ? 2 : 1,
+    borderStyle: borderWidth === '0' ? 'none' : 'solid',
+    color: resolved.rootAppearance.textColor || undefined,
+    textAlign: resolved.rootAppearance.textAlign || undefined,
+  };
+
+  const renderSlotLive = (slotNodeId: string): React.ReactNode => {
+    const rawSlotNode = resolved.nodesById[slotNodeId];
+    if (!rawSlotNode) return null;
+    const def = formComponentRegistry.get(rawSlotNode.type);
+    if (!def) return null;
+
+    const slotNode = pipeNode ? pipeNode(rawSlotNode) : rawSlotNode;
+    const Renderer = def.RespondentRenderer;
+    const renderedChildren =
+      def.isContainer && slotNode.children?.length
+        ? slotNode.children.map((cid) => renderSlotLive(cid))
+        : undefined;
+
+    return (
+      <div
+        key={slotNode.id}
+        data-fs-component={slotNode.id}
+        data-fs-type={slotNode.type}
+        className="min-w-0"
+      >
+        <Renderer
+          node={slotNode}
+          value={nestedAnswers ? nestedAnswers[slotNode.id] : undefined}
+          onChange={(val) => onNestedChange?.(slotNode.id, val)}
+          error={nestedErrors ? nestedErrors[slotNode.id] : undefined}
+          required={Boolean(slotNode.validation.required)}
+          disabled={disabled || Boolean(slotNode.behaviour.readOnly)}
+          design={design}
+          primaryColor={primaryColor}
+          radiusClass={radiusClass}
+          viewport={viewport}
+          renderedChildren={renderedChildren}
+        />
+      </div>
+    );
+  };
+
+  return (
+    <div
+      data-fs-reusable-def={resolved.definition.id}
+      data-fs-reusable-version={resolved.activeVersion}
+      className={`fs-reusable-instance ${getReusableContainerPadding(
+        resolved.rootLayout.padding
+      )} ${getReusableRadiusClass(
+        resolved.rootAppearance.borderRadius,
+        radiusClass
+      )} ${getReusableShadowClass(resolved.rootAppearance.shadow)}`}
+      style={wrapperStyle}
+    >
+      <div className={`grid ${colsClass} ${getReusableGapClass(resolved.rootLayout.gap)}`}>
+        {resolved.rootNodeIds.map((nid) => renderSlotLive(nid))}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
 // Built-in Component Registry Catalog (4 Categories: Content, Fields, Layout, Other)
 // ============================================================================
 
@@ -1785,6 +2265,51 @@ export const BUILTIN_COMPONENT_DEFINITIONS: FormComponentDefinition[] = [
     supportedOptions: ['label', 'helpText', 'width', 'textAlign'],
     EditorRenderer: StatementBlockEditor,
     RespondentRenderer: StatementRespondent,
+  },
+  {
+    type: 'button_link',
+    displayName: 'Button / Link',
+    shortLabel: 'Button',
+    hint: 'Call-to-action button or external link',
+    category: 'content',
+    isQuestion: false,
+    keywords: ['cta', 'action', 'link', 'url', 'button', 'href'],
+    icon: CursorClick,
+    defaultContent: {
+      label: 'Learn more',
+      buttonUrl: 'https://example.com',
+      buttonVariant: 'primary',
+      buttonOpenInNewTab: true,
+    },
+    defaultAppearance: DEFAULT_APPEARANCE,
+    defaultLayout: DEFAULT_LAYOUT,
+    defaultBehaviour: {},
+    defaultValidation: { required: false },
+    supportedOptions: ['label', 'buttonLink', 'width', 'textAlign'],
+    EditorRenderer: ButtonLinkBlockEditor,
+    RespondentRenderer: ButtonLinkRespondent,
+  },
+  {
+    type: 'custom_html',
+    displayName: 'Custom HTML',
+    shortLabel: 'HTML',
+    hint: 'Sanitized semantic HTML content block',
+    category: 'content',
+    isQuestion: false,
+    keywords: ['html', 'code', 'embed', 'markup', 'banner', 'table', 'callout'],
+    icon: Code,
+    defaultContent: {
+      label: 'Custom HTML Block',
+      htmlContent: HTML_EXAMPLE_SNIPPETS[0].html,
+      htmlEnablePiping: true,
+    },
+    defaultAppearance: DEFAULT_APPEARANCE,
+    defaultLayout: DEFAULT_LAYOUT,
+    defaultBehaviour: {},
+    defaultValidation: { required: false },
+    supportedOptions: ['label', 'customHtml', 'width', 'textAlign', 'backgroundColor'],
+    EditorRenderer: CustomHtmlBlockEditor,
+    RespondentRenderer: CustomHtmlRespondent,
   },
 
   // ==========================================================================
@@ -2243,6 +2768,25 @@ export const BUILTIN_COMPONENT_DEFINITIONS: FormComponentDefinition[] = [
     supportedOptions: ['label', 'width'],
     EditorRenderer: ProgressIndicatorEditor,
     RespondentRenderer: ProgressIndicatorRespondent,
+  },
+  {
+    type: 'reusable_instance',
+    displayName: 'Reusable Component',
+    shortLabel: 'Reusable',
+    hint: 'Linked instance of a saved reusable component',
+    category: 'other',
+    isQuestion: false,
+    hiddenFromPalette: true,
+    keywords: ['reusable', 'custom', 'component', 'library', 'template'],
+    icon: Cube,
+    defaultContent: { label: 'Reusable Component' },
+    defaultAppearance: DEFAULT_APPEARANCE,
+    defaultLayout: DEFAULT_LAYOUT,
+    defaultBehaviour: {},
+    defaultValidation: { required: false },
+    supportedOptions: ['reusableInstance', 'width'],
+    EditorRenderer: ReusableInstanceEditor,
+    RespondentRenderer: ReusableInstanceRespondent,
   },
 ];
 

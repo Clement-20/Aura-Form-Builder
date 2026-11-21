@@ -17,18 +17,23 @@ import {
   ComponentLayoutProps,
   ComponentValidationProps,
   CrossFieldValidationRule,
+  CUSTOM_CODE_SCHEMA_VERSION,
   DOCUMENT_SCHEMA_VERSION,
   FormComponentNode,
   FormComponentType,
+  FormCustomCodeConfig,
   FormDocument,
   FormOutcomeConfig,
   FormPage,
   FormScoringConfig,
   FormVariableDefinition,
+  ReusableComponentDefinition,
+  ReusableInstanceConfig,
 } from './types';
 import { isRecord, repairFormDocument } from './validation';
 import { normalizeLogicRule, serializeStudioLogicRule } from '../logic/migration';
 import { AnyLogicRule } from '../logic/types';
+import { collectReferencedDefinitions } from '../engines/reusable-component-engine';
 
 /**
  * Optional lossless sidecar stored inside a legacy FormField when serializing v2 -> v1.
@@ -48,6 +53,12 @@ interface SerializedStudioFieldMeta {
   spacerSize?: 'sm' | 'md' | 'lg';
   acceptedFileTypes?: string;
   maxFileSizeMb?: number;
+  htmlContent?: string;
+  htmlEnablePiping?: boolean;
+  buttonUrl?: string;
+  buttonVariant?: 'primary' | 'secondary' | 'outline';
+  buttonOpenInNewTab?: boolean;
+  reusableInstance?: ReusableInstanceConfig;
   appearance: ComponentAppearanceProps;
   layout: ComponentLayoutProps;
   behaviour: ComponentBehaviourProps;
@@ -156,6 +167,11 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
       spacerSize: meta?.spacerSize,
       acceptedFileTypes: meta?.acceptedFileTypes,
       maxFileSizeMb: meta?.maxFileSizeMb,
+      htmlContent: meta?.htmlContent,
+      htmlEnablePiping: meta?.htmlEnablePiping,
+      buttonUrl: meta?.buttonUrl,
+      buttonVariant: meta?.buttonVariant,
+      buttonOpenInNewTab: meta?.buttonOpenInNewTab,
     };
 
     const appearance: ComponentAppearanceProps = meta?.appearance
@@ -217,6 +233,9 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
       layout,
       behaviour,
       validation,
+      ...(meta?.reusableInstance
+        ? { reusableInstance: JSON.parse(JSON.stringify(meta.reusableInstance)) }
+        : {}),
     };
 
     if (!meta?.parentId) {
@@ -231,6 +250,8 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
       studioCrossFieldValidations?: CrossFieldValidationRule[];
       studioScoring?: FormScoringConfig;
       studioOutcomes?: FormOutcomeConfig;
+      studioCustomCode?: FormCustomCodeConfig;
+      studioComponentDefinitions?: Record<string, ReusableComponentDefinition>;
     }),
   };
   const restoredVariables: FormVariableDefinition[] = Array.isArray(rawSettings.studioVariables)
@@ -252,11 +273,32 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
   const restoredOutcomes: FormOutcomeConfig | undefined = rawSettings.studioOutcomes
     ? JSON.parse(JSON.stringify(rawSettings.studioOutcomes))
     : undefined;
+  const restoredCustomCode: FormCustomCodeConfig | undefined = rawSettings.studioCustomCode
+    ? {
+        schemaVersion: CUSTOM_CODE_SCHEMA_VERSION,
+        css: {
+          enabled: Boolean(rawSettings.studioCustomCode.css?.enabled),
+          code: rawSettings.studioCustomCode.css?.code || '',
+        },
+        js: {
+          enabled: Boolean(rawSettings.studioCustomCode.js?.enabled),
+          code: rawSettings.studioCustomCode.js?.code || '',
+          timeoutMs: rawSettings.studioCustomCode.js?.timeoutMs,
+        },
+        updatedAt: rawSettings.studioCustomCode.updatedAt,
+      }
+    : undefined;
+  const restoredComponentDefinitions: Record<string, ReusableComponentDefinition> | undefined =
+    isRecord(rawSettings.studioComponentDefinitions)
+      ? JSON.parse(JSON.stringify(rawSettings.studioComponentDefinitions))
+      : undefined;
 
   delete rawSettings.studioVariables;
   delete rawSettings.studioCrossFieldValidations;
   delete rawSettings.studioScoring;
   delete rawSettings.studioOutcomes;
+  delete rawSettings.studioCustomCode;
+  delete rawSettings.studioComponentDefinitions;
 
   const doc: FormDocument = {
     schemaVersion: DOCUMENT_SCHEMA_VERSION,
@@ -286,6 +328,8 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
     variables: restoredVariables,
     scoring: restoredScoring,
     outcomes: restoredOutcomes,
+    customCode: restoredCustomCode,
+    componentDefinitions: restoredComponentDefinitions,
     integrations: {},
     metadata: {
       createdAt: legacy.createdAt || new Date().toISOString(),
@@ -357,6 +401,14 @@ export function serializeDocumentToLegacyForm(doc: FormDocument): FormSchema {
         spacerSize: node.content.spacerSize,
         acceptedFileTypes: node.content.acceptedFileTypes,
         maxFileSizeMb: node.content.maxFileSizeMb,
+        htmlContent: node.content.htmlContent,
+        htmlEnablePiping: node.content.htmlEnablePiping,
+        buttonUrl: node.content.buttonUrl,
+        buttonVariant: node.content.buttonVariant,
+        buttonOpenInNewTab: node.content.buttonOpenInNewTab,
+        reusableInstance: node.reusableInstance
+          ? JSON.parse(JSON.stringify(node.reusableInstance))
+          : undefined,
         appearance: { ...node.appearance },
         layout: {
           ...node.layout,
@@ -401,6 +453,8 @@ export function serializeDocumentToLegacyForm(doc: FormDocument): FormSchema {
     studioCrossFieldValidations?: CrossFieldValidationRule[];
     studioScoring?: FormScoringConfig;
     studioOutcomes?: FormOutcomeConfig;
+    studioCustomCode?: FormCustomCodeConfig;
+    studioComponentDefinitions?: Record<string, ReusableComponentDefinition>;
   } = { ...repaired.settings };
 
   if (repaired.variables && repaired.variables.length > 0) {
@@ -424,6 +478,17 @@ export function serializeDocumentToLegacyForm(doc: FormDocument): FormSchema {
 
   if (repaired.outcomes) {
     serializedSettings.studioOutcomes = JSON.parse(JSON.stringify(repaired.outcomes));
+  }
+
+  if (repaired.customCode) {
+    serializedSettings.studioCustomCode = JSON.parse(JSON.stringify(repaired.customCode));
+  }
+
+  // Embed ONLY reusable component definitions referenced by instances in this form
+  // to keep published forms self-contained while avoiding unused definition duplication.
+  const referencedDefs = collectReferencedDefinitions(repaired);
+  if (Object.keys(referencedDefs).length > 0) {
+    serializedSettings.studioComponentDefinitions = referencedDefs;
   }
 
   const legacyForm: FormSchema = {
