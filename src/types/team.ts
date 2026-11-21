@@ -2,7 +2,7 @@
  * Co-Authoring & Teaming type definitions for AuraForm
  */
 
-export type TeamRole = 'owner' | 'editor' | 'viewer';
+export type TeamRole = 'owner' | 'admin' | 'editor' | 'analyst' | 'viewer';
 
 export interface UserTeamMembership {
   teamId: string;
