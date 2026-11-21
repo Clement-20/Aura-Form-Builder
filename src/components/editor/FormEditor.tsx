@@ -24,6 +24,7 @@ import { FieldInspector } from './FieldInspector';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ThemeStudio } from './ThemeStudio';
 import { VisualLogicBuilder } from './VisualLogicBuilder';
+import { WorkflowBuilderStudio } from './WorkflowBuilderStudio';
 import { AdvancedCodeStudio } from './AdvancedCodeStudio';
 import { IntegrationsStudio } from './IntegrationsStudio';
 import { SettingsTab } from './SettingsTab';
@@ -71,6 +72,7 @@ interface FormEditorProps {
     | 'build'
     | 'theme'
     | 'logic'
+    | 'workflows'
     | 'code'
     | 'integrations'
     | 'settings'
@@ -154,7 +156,7 @@ export const FormEditor: React.FC<FormEditorProps> = ({
   const [remoteUpdateBanner, setRemoteUpdateBanner] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<
-    'build' | 'theme' | 'logic' | 'code' | 'integrations' | 'settings' | 'share' | 'analytics'
+    'build' | 'theme' | 'logic' | 'workflows' | 'code' | 'integrations' | 'settings' | 'share' | 'analytics'
   >(initialTab);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isAIOpen, setIsAIOpen] = useState(false);
@@ -561,7 +563,9 @@ export const FormEditor: React.FC<FormEditorProps> = ({
           ? 'theme'
           : activeTab === 'integrations'
             ? 'settings'
-            : activeTab
+            : activeTab === 'workflows'
+              ? 'logic'
+              : activeTab
       ).catch(() => {});
     };
 
@@ -1008,6 +1012,14 @@ export const FormEditor: React.FC<FormEditorProps> = ({
             onUpdateCrossFieldValidations={studio.updateCrossFieldValidations}
             onUpdateScoring={studio.updateScoringConfig}
             onUpdateOutcomes={studio.updateOutcomesConfig}
+            isReadOnly={isReadOnly}
+          />
+        )}
+
+        {activeTab === 'workflows' && (
+          <WorkflowBuilderStudio
+            document={doc}
+            firebaseUser={firebaseUser}
             isReadOnly={isReadOnly}
           />
         )}

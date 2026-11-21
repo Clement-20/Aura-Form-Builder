@@ -22,6 +22,7 @@ import {
   CaretRight,
   Code,
   PlugsConnected,
+  FlowArrow,
 } from '@phosphor-icons/react';
 import { FormSchema } from '../../types/form';
 import { CollaboratorPresence } from '../../types/team';
@@ -34,6 +35,7 @@ interface EditorHeaderProps {
     | 'build'
     | 'theme'
     | 'logic'
+    | 'workflows'
     | 'code'
     | 'integrations'
     | 'settings'
@@ -44,6 +46,7 @@ interface EditorHeaderProps {
       | 'build'
       | 'theme'
       | 'logic'
+      | 'workflows'
       | 'code'
       | 'integrations'
       | 'settings'
@@ -106,6 +109,7 @@ export const EditorHeader: React.FC<EditorHeaderProps> = ({
     { id: 'build', label: 'Build', icon: Stack },
     { id: 'theme', label: 'Design', icon: Palette },
     { id: 'logic', label: `Rules (${form.logicRules.length})`, icon: GitBranch },
+    { id: 'workflows', label: 'Workflows', icon: FlowArrow },
     { id: 'code', label: 'Code', icon: Code },
     { id: 'integrations', label: 'Integrations', icon: PlugsConnected },
     { id: 'settings', label: 'Settings', icon: GearSix },

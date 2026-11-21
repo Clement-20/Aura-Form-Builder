@@ -42,3 +42,10 @@ export * from './engines/rendering-engine';
 // 5. Integrations & Webhooks Shared Types
 export * from './integrations/types';
 
+// 6. Visual Workflow Automation Shared Types, Evaluator, Validator & Templates
+export * from './workflows/types';
+export * from './workflows/condition-evaluator';
+export * from './workflows/validation';
+export * from './workflows/templates';
+
+

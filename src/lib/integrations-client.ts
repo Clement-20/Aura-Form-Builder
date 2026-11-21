@@ -25,7 +25,7 @@ import type {
 let memorySessionToken: string | null = null;
 let memorySessionExpiresAtMs = 0;
 
-async function getAuthHeader(firebaseUser?: User | null): Promise<Record<string, string>> {
+export async function getStudioAuthHeader(firebaseUser?: User | null): Promise<Record<string, string>> {
   if (firebaseUser) {
     try {
       const idToken = await firebaseUser.getIdToken();
@@ -60,7 +60,7 @@ async function apiJson<T>(
   init: RequestInit,
   firebaseUser?: User | null
 ): Promise<T> {
-  const auth = await getAuthHeader(firebaseUser);
+  const auth = await getStudioAuthHeader(firebaseUser);
   const res = await fetch(url, {
     ...init,
     headers: {

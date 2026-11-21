@@ -5,8 +5,11 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { migrateLegacyFormToDocument } from './src/studio/document/migration';
 import { validateAndSanitizeSubmission } from './src/studio/engines/submission-validator';
+import { formComponentRegistry } from './src/studio/registry/builtin-components';
 import { createIntegrationEngine } from './server/integrations/engine';
 import { createIntegrationsRouter } from './server/integrations/routes';
+import { createWorkflowEngine } from './server/workflows/engine';
+import { createWorkflowsRouter } from './server/workflows/routes';
 
 dotenv.config();
 
@@ -17,6 +20,12 @@ const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json({ limit: '10mb' }));
+
+// Shared backend engines: Phase 3.4 Integrations + Phase 3.5 Visual Workflow Automation
+const integrationsEngine = createIntegrationEngine();
+const workflowsEngine = createWorkflowEngine({
+  integrationEngine: integrationsEngine,
+});
 
 // Helper to get GoogleGenAI client safely
 const getGeminiClient = () => {
@@ -418,11 +427,13 @@ app.post('/api/submissions/validate', (req: Request, res: Response) => {
       return;
     }
 
-    const { form, answers, endedEarly, endedOnPageId } = body as {
+    const { form, answers, endedEarly, endedOnPageId, submissionId, durationSeconds } = body as {
       form?: unknown;
       answers?: unknown;
       endedEarly?: unknown;
       endedOnPageId?: unknown;
+      submissionId?: unknown;
+      durationSeconds?: unknown;
     };
 
     if (!form || typeof form !== 'object' || Array.isArray(form)) {
@@ -449,8 +460,43 @@ app.post('/api/submissions/validate', (req: Request, res: Response) => {
       return;
     }
 
+    // Verified backend event trigger for active workflows (never relies on browser execution)
+    const verifiedSubmissionId =
+      typeof submissionId === 'string' && submissionId.trim()
+        ? submissionId.trim().slice(0, 128)
+        : `sub_${Math.random().toString(36).substring(2, 10)}`;
+
+    const fieldCatalog = Object.values(doc.components)
+      .filter((node) => formComponentRegistry.get(node.type)?.category === 'fields')
+      .map((node) => ({
+        id: node.id,
+        label: node.content.label || node.id,
+        type: node.type,
+      }));
+
+    workflowsEngine.enqueueLiveSubmission({
+      formId: doc.id,
+      formTitle: doc.title,
+      formSlug: doc.settings.slug,
+      submissionId: verifiedSubmissionId,
+      submittedAt: new Date().toISOString(),
+      durationSeconds: typeof durationSeconds === 'number' ? durationSeconds : undefined,
+      isComplete: true,
+      answers: result.sanitizedAnswers,
+      variables: result.resolvedVariables,
+      formattedVariables: result.formattedVariables,
+      fieldCatalog,
+      score: result.score,
+      maxScore: result.maxScore,
+      scorePercent: result.scorePercent,
+      categoryScores: result.categoryScores as Record<string, unknown> | undefined,
+      outcomeId: result.outcomeId,
+      outcomeName: result.outcomeName,
+    });
+
     res.json({
       valid: true,
+      submissionId: verifiedSubmissionId,
       sanitizedAnswers: result.sanitizedAnswers,
       calculatedValues: result.calculatedValues,
       resolvedVariables: result.resolvedVariables,
@@ -476,9 +522,9 @@ app.post('/api/submissions/validate', (req: Request, res: Response) => {
   }
 });
 
-// Mount FlexStore Integrations & Webhooks API
-const integrationsEngine = createIntegrationEngine();
+// Mount FlexStore Integrations & Webhooks API + Visual Workflow Automation API
 app.use('/api/integrations', createIntegrationsRouter(integrationsEngine));
+app.use('/api/workflows', createWorkflowsRouter(workflowsEngine));
 
 // Legacy local test endpoint (preserved for backwards compatibility; use /api/integrations/* for real outbound webhooks)
 app.post('/api/webhook/test', (req: Request, res: Response) => {

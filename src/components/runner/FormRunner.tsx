@@ -39,6 +39,7 @@ export const FormRunner: React.FC<FormRunnerProps> = ({
     // Preview mode must NEVER persist real responses
     if (isInteractivePreview) return;
 
+    const submissionId = 'sub_' + Math.random().toString(36).substring(2, 9);
     const rawAnswers = meta?.rawAnswers ?? answers;
     let verifiedAnswers = answers;
     let verifiedVariables: Record<string, unknown> | undefined;
@@ -57,6 +58,8 @@ export const FormRunner: React.FC<FormRunnerProps> = ({
         body: JSON.stringify({
           form: document,
           answers: rawAnswers,
+          submissionId,
+          durationSeconds,
           endedEarly: meta?.endedEarly,
           endedOnPageId: meta?.endedOnPageId,
         }),
@@ -97,7 +100,7 @@ export const FormRunner: React.FC<FormRunnerProps> = ({
     }
 
     const submission: FormSubmission = {
-      id: 'sub_' + Math.random().toString(36).substring(2, 9),
+      id: submissionId,
       formId: document.id,
       submittedAt: new Date().toISOString(),
       answers: verifiedAnswers,
@@ -120,7 +123,8 @@ export const FormRunner: React.FC<FormRunnerProps> = ({
     setLastSubmission(submission);
 
     // Non-blocking async dispatch to registered form integrations/webhooks.
-    // Form submission always succeeds immediately even if external endpoints are unreachable.
+    // Live workflows are already triggered server-side inside /api/submissions/validate
+    // when serverValidated is true (using the exact same submissionId for idempotency).
     const fieldCatalog = Object.values(document.components)
       .filter((node) => formComponentRegistry.get(node.type)?.category === 'fields')
       .map((node) => ({
