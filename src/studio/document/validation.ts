@@ -210,7 +210,14 @@ export function repairFormDocument(doc: FormDocument): FormDocument {
       content: isRecord(rawNode.content)
         ? { ...rawNode.content, label: typeof rawNode.content.label === 'string' ? rawNode.content.label : '' }
         : { label: 'Untitled' },
-      appearance: isRecord(rawNode.appearance) ? { ...rawNode.appearance } : {},
+      appearance: isRecord(rawNode.appearance)
+        ? {
+            ...rawNode.appearance,
+            ...(isRecord(rawNode.appearance.animation)
+              ? { animation: JSON.parse(JSON.stringify(rawNode.appearance.animation)) }
+              : {}),
+          }
+        : {},
       layout: isRecord(rawNode.layout)
         ? { ...rawNode.layout, width: rawNode.layout.width || 'full' }
         : { width: 'full' },
@@ -252,6 +259,14 @@ export function repairFormDocument(doc: FormDocument): FormDocument {
     id: safeId,
     title: typeof doc.title === 'string' ? doc.title : 'Untitled Form',
     description: typeof doc.description === 'string' ? doc.description : '',
+    design: isRecord(doc.design)
+      ? {
+          ...doc.design,
+          ...(isRecord((doc.design as any).motion)
+            ? { motion: JSON.parse(JSON.stringify((doc.design as any).motion)) }
+            : {}),
+        }
+      : doc.design,
     pages,
     components,
     logic: {

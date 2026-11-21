@@ -25,6 +25,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ThemeStudio } from './ThemeStudio';
 import { VisualLogicBuilder } from './VisualLogicBuilder';
 import { AdvancedCodeStudio } from './AdvancedCodeStudio';
+import { IntegrationsStudio } from './IntegrationsStudio';
 import { SettingsTab } from './SettingsTab';
 import { ShareTab } from './ShareTab';
 import { AnalyticsTab } from './AnalyticsTab';
@@ -66,7 +67,15 @@ import { StudioDragPayload } from './dnd-types';
 
 interface FormEditorProps {
   initialForm: FormSchema;
-  initialTab?: 'build' | 'theme' | 'logic' | 'code' | 'settings' | 'share' | 'analytics';
+  initialTab?:
+    | 'build'
+    | 'theme'
+    | 'logic'
+    | 'code'
+    | 'integrations'
+    | 'settings'
+    | 'share'
+    | 'analytics';
   teamId?: string | null;
   team?: TeamWorkspace | null;
   teamRole?: TeamRole | null;
@@ -145,7 +154,7 @@ export const FormEditor: React.FC<FormEditorProps> = ({
   const [remoteUpdateBanner, setRemoteUpdateBanner] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<
-    'build' | 'theme' | 'logic' | 'code' | 'settings' | 'share' | 'analytics'
+    'build' | 'theme' | 'logic' | 'code' | 'integrations' | 'settings' | 'share' | 'analytics'
   >(initialTab);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isAIOpen, setIsAIOpen] = useState(false);
@@ -159,6 +168,26 @@ export const FormEditor: React.FC<FormEditorProps> = ({
     isOpen: boolean;
     editingDef: ReusableComponentDefinition | null;
   }>({ isOpen: false, editingDef: null });
+
+  // Phase 3.3: On-canvas animation preview replay state
+  const [animationPreview, setAnimationPreview] = useState<{
+    componentId: string | 'all';
+    nonce: number;
+  } | null>(null);
+
+  const handlePreviewComponentAnimation = useCallback((componentId: string) => {
+    setAnimationPreview((prev) => ({
+      componentId,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }, []);
+
+  const handleReplayCanvasAnimations = useCallback(() => {
+    setAnimationPreview((prev) => ({
+      componentId: 'all',
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }, []);
 
   useEffect(() => {
     setReusableLibrary(getReusableComponentLibrary(firebaseUser?.uid));
@@ -528,7 +557,11 @@ export const FormEditor: React.FC<FormEditorProps> = ({
         firebaseUser,
         teamRole,
         studio.selectedComponentId,
-        activeTab === 'code' ? 'theme' : activeTab
+        activeTab === 'code'
+          ? 'theme'
+          : activeTab === 'integrations'
+            ? 'settings'
+            : activeTab
       ).catch(() => {});
     };
 
@@ -751,6 +784,8 @@ export const FormEditor: React.FC<FormEditorProps> = ({
               onSaveNodeAsReusable={handleSaveNodeAsReusable}
               onEditReusableDefinition={handleEditReusableDefinition}
               onSyncReusableInstance={handleSyncReusableInstance}
+              animationPreview={animationPreview}
+              onReplayCanvasAnimations={handleReplayCanvasAnimations}
               isReadOnly={isReadOnly}
             />
 
@@ -779,6 +814,7 @@ export const FormEditor: React.FC<FormEditorProps> = ({
               onUpdateThankYouScreen={studio.updateThankYouScreen}
               canvasViewport={studio.canvasViewport}
               onResetComponentAppearance={studio.resetComponentAppearance}
+              onPreviewComponentAnimation={handlePreviewComponentAnimation}
               reusableDefinitions={mergedReusableDefsMap}
               onSaveNodeAsReusable={handleSaveNodeAsReusable}
               onEditReusableDefinition={handleEditReusableDefinition}
@@ -919,6 +955,10 @@ export const FormEditor: React.FC<FormEditorProps> = ({
                       onUpdateThankYouScreen={studio.updateThankYouScreen}
                       canvasViewport={studio.canvasViewport}
                       onResetComponentAppearance={studio.resetComponentAppearance}
+                      onPreviewComponentAnimation={(cid) => {
+                        setMobileSheet('none');
+                        handlePreviewComponentAnimation(cid);
+                      }}
                       reusableDefinitions={mergedReusableDefsMap}
                       onSaveNodeAsReusable={(cid) => {
                         setMobileSheet('none');
@@ -984,6 +1024,14 @@ export const FormEditor: React.FC<FormEditorProps> = ({
           />
         )}
 
+        {activeTab === 'integrations' && (
+          <IntegrationsStudio
+            document={doc}
+            firebaseUser={firebaseUser}
+            isReadOnly={isReadOnly}
+          />
+        )}
+
         {activeTab === 'settings' && (
           <SettingsTab
             form={legacyForm}
@@ -994,6 +1042,7 @@ export const FormEditor: React.FC<FormEditorProps> = ({
               });
             }}
             onExportSchema={handleExportSchema}
+            onOpenIntegrations={() => setActiveTab('integrations')}
           />
         )}
 

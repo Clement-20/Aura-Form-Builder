@@ -5,6 +5,8 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { migrateLegacyFormToDocument } from './src/studio/document/migration';
 import { validateAndSanitizeSubmission } from './src/studio/engines/submission-validator';
+import { createIntegrationEngine } from './server/integrations/engine';
+import { createIntegrationsRouter } from './server/integrations/routes';
 
 dotenv.config();
 
@@ -474,15 +476,18 @@ app.post('/api/submissions/validate', (req: Request, res: Response) => {
   }
 });
 
-// Simulated Webhook ping receiver
+// Mount FlexStore Integrations & Webhooks API
+const integrationsEngine = createIntegrationEngine();
+app.use('/api/integrations', createIntegrationsRouter(integrationsEngine));
+
+// Legacy local test endpoint (preserved for backwards compatibility; use /api/integrations/* for real outbound webhooks)
 app.post('/api/webhook/test', (req: Request, res: Response) => {
-  console.log('[Webhook Test Received]', req.body);
   res.json({
     status: 'success',
     receivedAt: new Date().toISOString(),
     payloadSummary: {
       keys: Object.keys(req.body || {}),
-      size: JSON.stringify(req.body).length,
+      size: JSON.stringify(req.body || {}).length,
     },
   });
 });

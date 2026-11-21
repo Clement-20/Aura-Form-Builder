@@ -22,6 +22,8 @@ import {
   EyeSlash,
   Cube,
   ArrowsClockwise,
+  Play,
+  Wheelchair,
 } from '@phosphor-icons/react';
 import { FormSchema, FormLayoutMode } from '../../types/form';
 import { CollaboratorPresence, FormComment } from '../../types/team';
@@ -42,6 +44,7 @@ import {
   MoveComponentDestination,
   NestingValidationResult,
   RegisteredComponentIcon,
+  resolveComponentAnimation,
   resolveComponentAppearanceClasses,
   resolveComponentTokens,
   resolveContainerColumns,
@@ -113,6 +116,8 @@ interface EditorCanvasProps {
     definitionId: string,
     preserveOverrides: boolean
   ) => void;
+  animationPreview?: { componentId: string | 'all'; nonce: number } | null;
+  onReplayCanvasAnimations?: () => void;
   isReadOnly?: boolean;
 }
 
@@ -163,8 +168,12 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
   onSaveNodeAsReusable,
   onEditReusableDefinition,
   onSyncReusableInstance,
+  animationPreview = null,
+  onReplayCanvasAnimations,
   isReadOnly = false,
 }) => {
+  const [livePreviewReplayNonce, setLivePreviewReplayNonce] = useState(0);
+  const [livePreviewReducedMotion, setLivePreviewReducedMotion] = useState(false);
   const [dropSlotKey, setDropSlotKey] = useState<string | null>(null);
   const [dropContainerId, setDropContainerId] = useState<string | null>(null);
   const [dragOverPageTabId, setDragOverPageTabId] = useState<string | null>(null);
@@ -516,8 +525,22 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
       componentId: node.id,
     };
 
+    const shouldPlayCanvasAnim = Boolean(
+      animationPreview &&
+        (animationPreview.componentId === 'all' || animationPreview.componentId === node.id)
+    );
+    const canvasResolvedAnim = shouldPlayCanvasAnim
+      ? resolveComponentAnimation(node, document.design, {
+          indexInContainer: siblingIndex,
+          viewport: canvasViewport,
+          reducedMotion: false,
+          forcePlay: animationPreview?.componentId === node.id,
+        })
+      : null;
+
     const blockStyle: React.CSSProperties = {
       ...(isContainer ? compTokens.containerStyle : compTokens.wrapperStyle),
+      ...(canvasResolvedAnim?.active ? canvasResolvedAnim.style : {}),
       ...(activePeers.length > 0
         ? { boxShadow: `0 0 0 2px ${activePeers[0].color}` }
         : {}),
@@ -525,7 +548,11 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
 
     return (
       <div
-        key={node.id}
+        key={
+          canvasResolvedAnim?.active && animationPreview
+            ? `${node.id}:anim:${animationPreview.nonce}`
+            : node.id
+        }
         data-fs-component={node.id}
         data-fs-type={node.type}
         onClick={(e) => {
@@ -535,6 +562,8 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
         }}
         style={blockStyle}
         className={`fs-field group/block relative rounded-xl transition-all ${
+          canvasResolvedAnim?.active ? canvasResolvedAnim.className : ''
+        } ${
           isBeingDragged ? 'opacity-40 scale-[0.99]' : ''
         } ${compTokens.isHidden ? 'opacity-45' : ''} ${
           isContainer ? 'p-4 border border-dashed' : 'p-4 border'
@@ -940,16 +969,42 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
               — Test inputs, page flow &amp; validation. No responses are saved.
             </span>
           </div>
-          {onExitLivePreview && (
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={onExitLivePreview}
-              className="px-3 py-1 rounded-lg bg-white text-[#0B0D0F] hover:bg-[#F7F6F3] font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              onClick={() => setLivePreviewReplayNonce((n) => n + 1)}
+              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap transition-colors"
+              title="Replay animations in live preview"
             >
-              <PencilSimple size={12} weight="bold" />
-              <span>Return to Editor</span>
+              <Play size={11} weight="fill" />
+              <span>Replay</span>
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => setLivePreviewReducedMotion((v) => !v)}
+              className={`px-2.5 py-1 rounded-lg font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                livePreviewReducedMotion
+                  ? 'bg-[#0F766E] text-white'
+                  : 'bg-white/10 hover:bg-white/20 text-white/80'
+              }`}
+              title="Simulate OS prefers-reduced-motion: reduce"
+            >
+              <Wheelchair size={12} weight="bold" />
+              <span className="hidden md:inline">
+                {livePreviewReducedMotion ? 'Reduced Motion' : 'Motion On'}
+              </span>
+            </button>
+            {onExitLivePreview && (
+              <button
+                type="button"
+                onClick={onExitLivePreview}
+                className="px-3 py-1 rounded-lg bg-white text-[#0B0D0F] hover:bg-[#F7F6F3] font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              >
+                <PencilSimple size={12} weight="bold" />
+                <span>Return to Editor</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 flex justify-center items-start">
@@ -968,6 +1023,8 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
               embedded={true}
               viewportOverride={canvasViewport}
               initialPageIndex={activePageIdxZero}
+              forceReducedMotion={livePreviewReducedMotion}
+              animationReplayNonce={livePreviewReplayNonce}
             />
           </div>
         </div>
@@ -1042,6 +1099,17 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {onReplayCanvasAnimations && (
+            <button
+              type="button"
+              onClick={onReplayCanvasAnimations}
+              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white border border-black/[0.08] text-[#5C6066] hover:text-[#0B0D0F] hover:border-black/20 flex items-center gap-1 transition-colors whitespace-nowrap"
+              title="Preview block animations on canvas"
+            >
+              <Play size={11} weight="fill" className="text-[#0F766E]" />
+              <span className="hidden sm:inline">Preview Motion</span>
+            </button>
+          )}
           {document.pages.length > 1 && (
             <button
               type="button"

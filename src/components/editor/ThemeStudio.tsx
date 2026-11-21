@@ -19,6 +19,9 @@ import {
   PaperPlaneTilt,
   X,
   Star,
+  PlayCircle,
+  Play,
+  Wheelchair,
 } from '@phosphor-icons/react';
 import { CustomThemePreset, FormSchema, FormTheme } from '../../types/form';
 import {
@@ -30,14 +33,30 @@ import {
   setDefaultTheme,
 } from '../../lib/storage';
 import {
+  ANIMATION_DELAY_MAX,
+  ANIMATION_DELAY_MIN,
+  ANIMATION_DIRECTION_OPTIONS,
+  ANIMATION_DURATION_MAX,
+  ANIMATION_DURATION_MIN,
+  ANIMATION_EASING_OPTIONS,
+  ANIMATION_TRIGGER_OPTIONS,
   BUILT_IN_THEME_PRESETS,
   BreakpointKey,
   checkDesignContrast,
+  COMPONENT_ENTRANCE_PRESETS,
+  DEFAULT_FORM_MOTION_CONFIG,
   DeviceDesignOverride,
   duplicateThemePreset,
   FormDesignConfig,
   FormDocument,
   FormDocumentRenderer,
+  FormMotionConfig,
+  normalizeFormMotionConfig,
+  PAGE_ENTER_PRESETS,
+  PAGE_EXIT_PRESETS,
+  PROGRESS_TRANSITION_OPTIONS,
+  STAGGER_INTERVAL_MAX,
+  STAGGER_INTERVAL_MIN,
   ViewportMode,
 } from '../../studio';
 
@@ -48,7 +67,7 @@ interface ThemeStudioProps {
   isReadOnly?: boolean;
 }
 
-type DesignTab = 'presets' | 'colours' | 'typography' | 'layout' | 'background' | 'borders';
+type DesignTab = 'presets' | 'colours' | 'typography' | 'layout' | 'background' | 'borders' | 'motion';
 
 const FONT_OPTIONS = [
   { name: 'Plus Jakarta Sans', category: 'Geometric Sans' },
@@ -135,6 +154,8 @@ export const ThemeStudio: React.FC<ThemeStudioProps> = ({
   const [activeSection, setActiveSection] = useState<DesignTab>('presets');
   const [previewDevice, setPreviewDevice] = useState<ViewportMode>('desktop');
   const [layoutDevice, setLayoutDevice] = useState<BreakpointKey>('desktop');
+  const [animationReplayNonce, setAnimationReplayNonce] = useState(0);
+  const [simulateReducedMotion, setSimulateReducedMotion] = useState(false);
   const [customPresets, setCustomPresets] = useState<CustomThemePreset[]>([]);
   const [otherForms, setOtherForms] = useState<FormSchema[]>([]);
 
@@ -262,7 +283,39 @@ export const ThemeStudio: React.FC<ThemeStudioProps> = ({
     { id: 'layout', label: 'Layout', icon: Layout },
     { id: 'background', label: 'Background', icon: ImageSquare },
     { id: 'borders', label: 'Borders & Buttons', icon: SlidersHorizontal },
+    { id: 'motion', label: 'Motion', icon: PlayCircle },
   ];
+
+  const motionConfig = useMemo(() => normalizeFormMotionConfig(design), [design]);
+
+  const updateMotion = (patch: Partial<FormMotionConfig>) => {
+    if (isReadOnly) return;
+    const next: FormMotionConfig = {
+      ...motionConfig,
+      ...patch,
+      pageTransition: {
+        ...motionConfig.pageTransition,
+        ...(patch.pageTransition || {}),
+      },
+      conditionalReveal: {
+        ...motionConfig.conditionalReveal,
+        ...(patch.conditionalReveal || {}),
+      },
+      resultScreen: {
+        ...motionConfig.resultScreen,
+        ...(patch.resultScreen || {}),
+      },
+      progressTransition: {
+        ...motionConfig.progressTransition,
+        ...(patch.progressTransition || {}),
+      },
+    };
+    onUpdateDesign({
+      motion: next,
+      respectReducedMotion: next.respectReducedMotion,
+    });
+    setAnimationReplayNonce((n) => n + 1);
+  };
 
   const activeDeviceOverride = design.responsive?.[layoutDevice] || {};
 
@@ -1605,13 +1658,525 @@ export const ThemeStudio: React.FC<ThemeStudioProps> = ({
               </div>
             </div>
           )}
+
+          {/* ============================================================== */}
+          {/* TAB 7: MOTION & TRANSITIONS (Phase 3.3)                        */}
+          {/* ============================================================== */}
+          {activeSection === 'motion' && (
+            <div className="space-y-5">
+              {/* Master Controls & Accessibility */}
+              <div className="p-3.5 rounded-xl bg-[#F7F6F3] border border-black/[0.08] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] block">
+                      Form Motion System
+                    </span>
+                    <p className="text-[11px] text-[#5C6066] mt-0.5">
+                      Lightweight GPU-accelerated animations shared between preview and published forms.
+                    </p>
+                  </div>
+                  {!isReadOnly && (
+                    <button
+                      type="button"
+                      onClick={() => updateMotion(DEFAULT_FORM_MOTION_CONFIG)}
+                      className="px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-[10px] font-semibold text-[#5C6066] hover:text-[#0B0D0F] shrink-0"
+                    >
+                      Defaults
+                    </button>
+                  )}
+                </div>
+
+                <label className="flex items-center justify-between gap-3 p-2.5 rounded-lg bg-white border border-black/[0.07] cursor-pointer">
+                  <div>
+                    <span className="font-semibold text-[#0B0D0F] block">Enable animations</span>
+                    <span className="text-[10px] text-[#5C6066]">
+                      Master switch to turn all form animations on or off globally.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    disabled={isReadOnly}
+                    checked={motionConfig.enabled}
+                    onChange={(e) => updateMotion({ enabled: e.target.checked })}
+                    className="w-4 h-4 accent-[#0F766E] rounded"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between gap-3 p-2.5 rounded-lg bg-white border border-black/[0.07] cursor-pointer">
+                  <div>
+                    <span className="font-semibold text-[#0B0D0F] block">
+                      Respect reduced motion
+                    </span>
+                    <span className="text-[10px] text-[#5C6066]">
+                      Automatically disables motion for respondents with OS reduced-motion enabled.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    disabled={isReadOnly}
+                    checked={motionConfig.respectReducedMotion}
+                    onChange={(e) => updateMotion({ respectReducedMotion: e.target.checked })}
+                    className="w-4 h-4 accent-[#0F766E] rounded"
+                  />
+                </label>
+              </div>
+
+              {motionConfig.enabled && (
+                <>
+                  {/* Default Component Entrance */}
+                  <div className="space-y-3 pt-1">
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] block">
+                      Default Component Entrance
+                    </span>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[#0B0D0F] block">Animation Preset</label>
+                        <select
+                          disabled={isReadOnly}
+                          value={motionConfig.componentPreset}
+                          onChange={(e) =>
+                            updateMotion({
+                              componentPreset: e.target.value as FormMotionConfig['componentPreset'],
+                            })
+                          }
+                          className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                        >
+                          {COMPONENT_ENTRANCE_PRESETS.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[#0B0D0F] block">Trigger</label>
+                        <select
+                          disabled={isReadOnly}
+                          value={motionConfig.trigger}
+                          onChange={(e) =>
+                            updateMotion({
+                              trigger: e.target.value as FormMotionConfig['trigger'],
+                            })
+                          }
+                          className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                        >
+                          {ANIMATION_TRIGGER_OPTIONS.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {motionConfig.componentPreset !== 'none' && (
+                      <>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[#0B0D0F] block">Direction</label>
+                            <select
+                              disabled={isReadOnly}
+                              value={motionConfig.direction}
+                              onChange={(e) =>
+                                updateMotion({
+                                  direction: e.target.value as FormMotionConfig['direction'],
+                                })
+                              }
+                              className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                            >
+                              {ANIMATION_DIRECTION_OPTIONS.map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[#0B0D0F] block">Easing</label>
+                            <select
+                              disabled={isReadOnly}
+                              value={motionConfig.easing}
+                              onChange={(e) =>
+                                updateMotion({
+                                  easing: e.target.value as FormMotionConfig['easing'],
+                                })
+                              }
+                              className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                            >
+                              {ANIMATION_EASING_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <label className="font-semibold text-[#0B0D0F]">Duration</label>
+                              <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                                {motionConfig.durationMs}ms
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              disabled={isReadOnly}
+                              min={ANIMATION_DURATION_MIN}
+                              max={ANIMATION_DURATION_MAX}
+                              step={20}
+                              value={motionConfig.durationMs}
+                              onChange={(e) =>
+                                updateMotion({ durationMs: Number(e.target.value) })
+                              }
+                              className="w-full accent-[#0F766E]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <label className="font-semibold text-[#0B0D0F]">Delay</label>
+                              <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                                {motionConfig.delayMs}ms
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              disabled={isReadOnly}
+                              min={ANIMATION_DELAY_MIN}
+                              max={ANIMATION_DELAY_MAX}
+                              step={20}
+                              value={motionConfig.delayMs}
+                              onChange={(e) => updateMotion({ delayMs: Number(e.target.value) })}
+                              className="w-full accent-[#0F766E]"
+                            />
+                          </div>
+                        </div>
+
+                        {motionConfig.componentPreset === 'stagger' && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <label className="font-semibold text-[#0B0D0F]">
+                                Stagger Interval
+                              </label>
+                              <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                                {motionConfig.staggerIntervalMs}ms per block
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              disabled={isReadOnly}
+                              min={STAGGER_INTERVAL_MIN}
+                              max={STAGGER_INTERVAL_MAX}
+                              step={10}
+                              value={motionConfig.staggerIntervalMs}
+                              onChange={(e) =>
+                                updateMotion({ staggerIntervalMs: Number(e.target.value) })
+                              }
+                              className="w-full accent-[#0F766E]"
+                            />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {/* Page & Conversational Transitions */}
+                  <div className="space-y-3 pt-4 border-t border-black/[0.07]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066]">
+                        Page &amp; Question Transitions
+                      </span>
+                      <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#0B0D0F] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          disabled={isReadOnly}
+                          checked={motionConfig.pageTransition.enabled}
+                          onChange={(e) =>
+                            updateMotion({
+                              pageTransition: {
+                                ...motionConfig.pageTransition,
+                                enabled: e.target.checked,
+                              },
+                            })
+                          }
+                          className="accent-[#0F766E] rounded"
+                        />
+                        <span>Active</span>
+                      </label>
+                    </div>
+
+                    {motionConfig.pageTransition.enabled && (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[#0B0D0F] block">
+                              Incoming View
+                            </label>
+                            <select
+                              disabled={isReadOnly}
+                              value={motionConfig.pageTransition.enterPreset}
+                              onChange={(e) =>
+                                updateMotion({
+                                  pageTransition: {
+                                    ...motionConfig.pageTransition,
+                                    enterPreset: e.target.value as any,
+                                  },
+                                })
+                              }
+                              className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                            >
+                              {PAGE_ENTER_PRESETS.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[#0B0D0F] block">
+                              Outgoing View
+                            </label>
+                            <select
+                              disabled={isReadOnly}
+                              value={motionConfig.pageTransition.exitPreset}
+                              onChange={(e) =>
+                                updateMotion({
+                                  pageTransition: {
+                                    ...motionConfig.pageTransition,
+                                    exitPreset: e.target.value as any,
+                                  },
+                                })
+                              }
+                              className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                            >
+                              {PAGE_EXIT_PRESETS.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[#0B0D0F] block">Direction</label>
+                            <select
+                              disabled={isReadOnly}
+                              value={motionConfig.pageTransition.direction}
+                              onChange={(e) =>
+                                updateMotion({
+                                  pageTransition: {
+                                    ...motionConfig.pageTransition,
+                                    direction: e.target.value as any,
+                                  },
+                                })
+                              }
+                              className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                            >
+                              {ANIMATION_DIRECTION_OPTIONS.map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.id === 'auto' ? 'Auto (Forward / Back)' : d.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="font-semibold text-[#0B0D0F] block">Easing</label>
+                            <select
+                              disabled={isReadOnly}
+                              value={motionConfig.pageTransition.easing}
+                              onChange={(e) =>
+                                updateMotion({
+                                  pageTransition: {
+                                    ...motionConfig.pageTransition,
+                                    easing: e.target.value as any,
+                                  },
+                                })
+                              }
+                              className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                            >
+                              {ANIMATION_EASING_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <label className="font-semibold text-[#0B0D0F]">
+                              Transition Duration
+                            </label>
+                            <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                              {motionConfig.pageTransition.durationMs}ms
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            disabled={isReadOnly}
+                            min={ANIMATION_DURATION_MIN}
+                            max={800}
+                            step={20}
+                            value={motionConfig.pageTransition.durationMs}
+                            onChange={(e) =>
+                              updateMotion({
+                                pageTransition: {
+                                  ...motionConfig.pageTransition,
+                                  durationMs: Number(e.target.value),
+                                },
+                              })
+                            }
+                            className="w-full accent-[#0F766E]"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Conditional Reveals, Outcomes & Progress Bar */}
+                  <div className="space-y-3 pt-4 border-t border-black/[0.07]">
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] block">
+                      Conditional Logic, Results &amp; Progress
+                    </span>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[#0B0D0F] block">
+                          Conditional Reveal
+                        </label>
+                        <select
+                          disabled={isReadOnly}
+                          value={
+                            motionConfig.conditionalReveal.enabled
+                              ? motionConfig.conditionalReveal.preset
+                              : 'none'
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value as any;
+                            updateMotion({
+                              conditionalReveal: {
+                                ...motionConfig.conditionalReveal,
+                                enabled: val !== 'none',
+                                preset: val,
+                              },
+                            });
+                          }}
+                          className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                        >
+                          {PAGE_ENTER_PRESETS.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[#0B0D0F] block">
+                          Result &amp; Outcome Screen
+                        </label>
+                        <select
+                          disabled={isReadOnly}
+                          value={
+                            motionConfig.resultScreen.enabled
+                              ? motionConfig.resultScreen.preset
+                              : 'none'
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value as any;
+                            updateMotion({
+                              resultScreen: {
+                                ...motionConfig.resultScreen,
+                                enabled: val !== 'none',
+                                preset: val,
+                              },
+                            });
+                          }}
+                          className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                        >
+                          {PAGE_ENTER_PRESETS.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="space-y-1">
+                        <label className="font-semibold text-[#0B0D0F] block">
+                          Progress Bar Transition
+                        </label>
+                        <select
+                          disabled={isReadOnly}
+                          value={motionConfig.progressTransition.style}
+                          onChange={(e) =>
+                            updateMotion({
+                              progressTransition: {
+                                ...motionConfig.progressTransition,
+                                style: e.target.value as any,
+                              },
+                            })
+                          }
+                          className="w-full px-2.5 py-2 rounded-lg bg-[#F7F6F3] border border-black/[0.08] font-medium"
+                        >
+                          {PROGRESS_TRANSITION_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="font-semibold text-[#0B0D0F]">Progress Speed</label>
+                          <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                            {motionConfig.progressTransition.durationMs}ms
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          disabled={isReadOnly || motionConfig.progressTransition.style === 'none'}
+                          min={100}
+                          max={800}
+                          step={20}
+                          value={motionConfig.progressTransition.durationMs}
+                          onChange={(e) =>
+                            updateMotion({
+                              progressTransition: {
+                                ...motionConfig.progressTransition,
+                                durationMs: Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full accent-[#0F766E] disabled:opacity-40"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
       {/* RIGHT PANEL: Real-Time Interactive Responsive Preview (Same FormDocumentRenderer as Published) */}
       <div className="flex-1 flex flex-col min-w-0 lg:h-full overflow-hidden">
         {/* Preview Top Bar */}
-        <div className="px-4 sm:px-6 py-2.5 bg-[#F7F6F3] border-b border-black/[0.08] flex items-center justify-between gap-3 shrink-0">
+        <div className="px-4 sm:px-6 py-2.5 bg-[#F7F6F3] border-b border-black/[0.08] flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
             <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-[#0B0D0F] truncate">
@@ -1619,34 +2184,62 @@ export const ThemeStudio: React.FC<ThemeStudioProps> = ({
             </span>
           </div>
 
-          <div
-            className="flex items-center gap-0.5 p-1 rounded-xl bg-white border border-black/[0.08]"
-            role="group"
-            aria-label="Preview viewport device"
-          >
-            {(
-              [
-                { id: 'desktop', icon: Desktop, label: 'Desktop' },
-                { id: 'tablet', icon: DeviceTablet, label: 'Tablet' },
-                { id: 'mobile', icon: DeviceMobile, label: 'Mobile' },
-              ] as const
-            ).map((d) => {
-              const Icon = d.icon;
-              const active = previewDevice === d.id;
-              return (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => setPreviewDevice(d.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
-                    active ? 'bg-[#0B0D0F] text-white' : 'text-[#5C6066] hover:text-[#0B0D0F]'
-                  }`}
-                >
-                  <Icon size={14} weight={active ? 'bold' : 'regular'} />
-                  <span className="hidden sm:inline">{d.label}</span>
-                </button>
-              );
-            })}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setAnimationReplayNonce((n) => n + 1)}
+              className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-[#0B0D0F] text-[#0B0D0F] hover:text-white border border-black/[0.08] text-[11px] font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              title="Replay entrance animations in preview"
+            >
+              <Play size={12} weight="fill" />
+              <span>Replay Motion</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSimulateReducedMotion((v) => !v)}
+              className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                simulateReducedMotion
+                  ? 'bg-[#0F766E] text-white border-[#0F766E]'
+                  : 'bg-white text-[#5C6066] hover:text-[#0B0D0F] border-black/[0.08]'
+              }`}
+              title="Simulate prefers-reduced-motion: reduce"
+            >
+              <Wheelchair size={13} weight="bold" />
+              <span className="hidden xl:inline">
+                {simulateReducedMotion ? 'Reduced Motion On' : 'Reduced Motion'}
+              </span>
+            </button>
+
+            <div
+              className="flex items-center gap-0.5 p-1 rounded-xl bg-white border border-black/[0.08]"
+              role="group"
+              aria-label="Preview viewport device"
+            >
+              {(
+                [
+                  { id: 'desktop', icon: Desktop, label: 'Desktop' },
+                  { id: 'tablet', icon: DeviceTablet, label: 'Tablet' },
+                  { id: 'mobile', icon: DeviceMobile, label: 'Mobile' },
+                ] as const
+              ).map((d) => {
+                const Icon = d.icon;
+                const active = previewDevice === d.id;
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => setPreviewDevice(d.id)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                      active ? 'bg-[#0B0D0F] text-white' : 'text-[#5C6066] hover:text-[#0B0D0F]'
+                    }`}
+                  >
+                    <Icon size={14} weight={active ? 'bold' : 'regular'} />
+                    <span className="hidden sm:inline">{d.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -1666,6 +2259,8 @@ export const ThemeStudio: React.FC<ThemeStudioProps> = ({
               isPreview={true}
               embedded={true}
               viewportOverride={previewDevice}
+              forceReducedMotion={simulateReducedMotion}
+              animationReplayNonce={animationReplayNonce}
             />
           </div>
         </div>

@@ -812,6 +812,9 @@ const APPEARANCE_OVERRIDE_KEYS: (keyof ComponentAppearanceProps)[] = [
 export function hasComponentStyleOverrides(node: FormComponentNode): boolean {
   const a = node.appearance || {};
   if (a.textAlign && a.textAlign !== 'left') return true;
+  if (a.animation && (a.animation.mode === 'custom' || a.animation.mode === 'disabled')) {
+    return true;
+  }
   for (const key of APPEARANCE_OVERRIDE_KEYS) {
     if (a[key] !== undefined && a[key] !== '') return true;
   }

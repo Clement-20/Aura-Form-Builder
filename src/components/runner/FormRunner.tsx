@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { FormSchema, FormSubmission } from '../../types/form';
 import { saveSubmission } from '../../lib/storage';
+import { dispatchFormSubmissionEvents } from '../../lib/integrations-client';
 import {
+  formComponentRegistry,
   FormDocumentRenderer,
   FormSubmitMetadata,
   migrateLegacyFormToDocument,
@@ -116,6 +118,36 @@ export const FormRunner: React.FC<FormRunnerProps> = ({
 
     saveSubmission(submission);
     setLastSubmission(submission);
+
+    // Non-blocking async dispatch to registered form integrations/webhooks.
+    // Form submission always succeeds immediately even if external endpoints are unreachable.
+    const fieldCatalog = Object.values(document.components)
+      .filter((node) => formComponentRegistry.get(node.type)?.category === 'fields')
+      .map((node) => ({
+        id: node.id,
+        label: node.content.label || node.id,
+        type: node.type,
+      }));
+
+    dispatchFormSubmissionEvents({
+      formId: document.id,
+      formTitle: document.title,
+      formSlug: document.settings.slug,
+      submissionId: submission.id,
+      submittedAt: submission.submittedAt,
+      durationSeconds: submission.durationSeconds,
+      answers: submission.answers,
+      fieldCatalog,
+      score: submission.score,
+      maxScore: submission.maxScore,
+      scorePercent: submission.scorePercent,
+      categoryScores: submission.categoryScores,
+      outcomeId: submission.outcomeId,
+      outcomeName: submission.outcomeName,
+      deviceInfo: submission.deviceInfo,
+      isComplete: submission.isComplete,
+    });
+
     if (onSubmitted) {
       onSubmitted(submission);
     }

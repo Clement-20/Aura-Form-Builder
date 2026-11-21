@@ -179,6 +179,144 @@
   animation: auraPulseNode 2.2s cubic-bezier(0.32, 0.72, 0, 1) infinite;
 }
 
+/* ============================================================================
+   Phase 3.3: Lightweight GPU-Composited Form Animations & Transitions
+   Uses transform, opacity, and clip-path only (zero layout reflow / zero CLS).
+   ============================================================================ */
+
+@keyframes fs-kf-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fs-kf-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes fs-kf-slide-in {
+  from {
+    opacity: 0;
+    transform: translate3d(var(--fs-anim-x, 0px), var(--fs-anim-y, 16px), 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes fs-kf-slide-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(var(--fs-anim-x, 0px), var(--fs-anim-y, -14px), 0);
+  }
+}
+
+@keyframes fs-kf-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fs-kf-scale-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes fs-kf-subtle-zoom {
+  from {
+    opacity: 0;
+    transform: scale(1.035);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fs-kf-reveal {
+  from {
+    opacity: 0;
+    clip-path: var(--fs-anim-clip-from, inset(100% 0 0 0));
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.fs-anim-fade-in {
+  animation: fs-kf-fade-in var(--fs-anim-duration, 280ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-fade-out {
+  animation: fs-kf-fade-out var(--fs-anim-duration, 180ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-slide-in {
+  animation: fs-kf-slide-in var(--fs-anim-duration, 280ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-slide-out {
+  animation: fs-kf-slide-out var(--fs-anim-duration, 180ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-scale-in {
+  animation: fs-kf-scale-in var(--fs-anim-duration, 280ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-scale-out {
+  animation: fs-kf-scale-out var(--fs-anim-duration, 180ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-subtle-zoom {
+  animation: fs-kf-subtle-zoom var(--fs-anim-duration, 300ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-reveal {
+  animation: fs-kf-reveal var(--fs-anim-duration, 320ms) var(--fs-anim-ease, cubic-bezier(0.22, 1, 0.36, 1)) var(--fs-anim-delay, 0ms) both;
+}
+
+.fs-anim-awaiting-viewport {
+  opacity: 0;
+  will-change: opacity, transform;
+}
+
+[data-fs-reduced-motion="true"] .fs-anim-awaiting-viewport,
+[data-fs-reduced-motion="true"] [class*="fs-anim-"] {
+  animation: none !important;
+  opacity: 1 !important;
+  transform: none !important;
+  clip-path: none !important;
+}
+
+[data-fs-reduced-motion="true"] .fs-progress-fill {
+  transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -192,6 +330,11 @@
   .studio-surface * {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+  }
+  .fs-anim-awaiting-viewport {
+    opacity: 1 !important;
+    transform: none !important;
   }
 }
 

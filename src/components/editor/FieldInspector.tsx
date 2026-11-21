@@ -31,6 +31,8 @@ import {
   LinkBreak,
   CaretDown,
   CaretRight,
+  Play,
+  PlayCircle,
 } from '@phosphor-icons/react';
 import {
   FormLayoutMode,
@@ -40,10 +42,19 @@ import {
   FormWelcomeScreen,
 } from '../../types/form';
 import {
+  ANIMATION_DELAY_MAX,
+  ANIMATION_DELAY_MIN,
+  ANIMATION_DIRECTION_OPTIONS,
+  ANIMATION_DURATION_MAX,
+  ANIMATION_DURATION_MIN,
+  ANIMATION_EASING_OPTIONS,
+  ANIMATION_TRIGGER_OPTIONS,
   BreakpointKey,
   buildReusableSlotNodeId,
   CanvasViewport,
   compileScopedCss,
+  COMPONENT_ENTRANCE_PRESETS,
+  ComponentAnimationConfig,
   ComponentAppearanceProps,
   ComponentNodePatch,
   ComponentWidth,
@@ -58,6 +69,7 @@ import {
   hasComponentStyleOverrides,
   HTML_EXAMPLE_SNIPPETS,
   isSafeReusableUrl,
+  normalizeFormMotionConfig,
   RegisteredComponentIcon,
   resolveReusableInstance,
   ReusableComponentDefinition,
@@ -65,6 +77,8 @@ import {
   sanitizeCustomHtml,
   SelectionTarget,
   SpacingToken,
+  STAGGER_INTERVAL_MAX,
+  STAGGER_INTERVAL_MIN,
   TextAlign,
   isSafeRegexPattern,
 } from '../../studio';
@@ -103,6 +117,7 @@ interface FieldInspectorProps {
   onUpdateThankYouScreen: (patch: Partial<FormThankYouScreen>) => void;
   canvasViewport?: CanvasViewport;
   onResetComponentAppearance?: (id: string) => void;
+  onPreviewComponentAnimation?: (id: string) => void;
   reusableDefinitions?: Record<string, ReusableComponentDefinition>;
   onSaveNodeAsReusable?: (componentId: string) => void;
   onEditReusableDefinition?: (definitionId: string) => void;
@@ -163,6 +178,7 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
   onUpdateThankYouScreen,
   canvasViewport = 'desktop',
   onResetComponentAppearance,
+  onPreviewComponentAnimation,
   reusableDefinitions,
   onSaveNodeAsReusable,
   onEditReusableDefinition,
@@ -2911,6 +2927,253 @@ export const FieldInspector: React.FC<FieldInspectorProps> = ({
                           ...(compiledCompCss?.warnings || []),
                         ]}
                       />
+                    </div>
+                  );
+                })()}
+
+                {/* MOTION & ANIMATION OVERRIDES (Phase 3.3) */}
+                {(() => {
+                  const globalMotion = normalizeFormMotionConfig(document.design);
+                  const anim: ComponentAnimationConfig = a.animation || { mode: 'inherit' };
+                  const mode = anim.mode || 'inherit';
+
+                  const updateAnim = (patch: Partial<ComponentAnimationConfig>) => {
+                    updateAppearance({
+                      animation: {
+                        ...anim,
+                        ...patch,
+                      },
+                    });
+                  };
+
+                  return (
+                    <div className="space-y-3 pt-4 border-t border-black/[0.07]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5C6066] flex items-center gap-1.5">
+                          <PlayCircle size={12} weight="bold" className="text-[#0F766E]" />
+                          <span>Motion &amp; Animation</span>
+                        </span>
+                        {onPreviewComponentAnimation && mode !== 'disabled' && globalMotion.enabled && (
+                          <button
+                            type="button"
+                            onClick={() => onPreviewComponentAnimation(component.id)}
+                            className="px-2 py-1 rounded-md bg-[#0F766E]/10 hover:bg-[#0F766E] text-[#0F766E] hover:text-white text-[10px] font-semibold flex items-center gap-1 transition-colors"
+                            title="Play this component's animation on the canvas"
+                          >
+                            <Play size={10} weight="fill" />
+                            <span>Preview</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {!globalMotion.enabled && (
+                        <p className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                          Animations are currently disabled globally in Design &rarr; Motion.
+                        </p>
+                      )}
+
+                      <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-[#F7F6F3] border border-black/[0.07]">
+                        {(
+                          [
+                            { id: 'inherit', label: 'Inherit' },
+                            { id: 'custom', label: 'Custom' },
+                            { id: 'disabled', label: 'Disable' },
+                          ] as const
+                        ).map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            disabled={isReadOnly}
+                            onClick={() => {
+                              if (opt.id === 'inherit') {
+                                updateAppearance({ animation: undefined });
+                              } else if (opt.id === 'disabled') {
+                                updateAnim({ mode: 'disabled' });
+                              } else {
+                                updateAnim({
+                                  mode: 'custom',
+                                  preset: anim.preset || globalMotion.componentPreset,
+                                  durationMs: anim.durationMs ?? globalMotion.durationMs,
+                                  delayMs: anim.delayMs ?? globalMotion.delayMs,
+                                  direction: anim.direction || globalMotion.direction,
+                                  easing: anim.easing || globalMotion.easing,
+                                  trigger: anim.trigger || globalMotion.trigger,
+                                  staggerIntervalMs:
+                                    anim.staggerIntervalMs ?? globalMotion.staggerIntervalMs,
+                                });
+                              }
+                            }}
+                            className={`py-1 rounded-md text-[10px] font-semibold transition-colors ${
+                              mode === opt.id
+                                ? 'bg-white text-[#0B0D0F] shadow-2xs'
+                                : 'text-[#5C6066] hover:text-[#0B0D0F]'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {mode === 'inherit' && (
+                        <p className="text-[10px] text-[#5C6066] leading-relaxed">
+                          Using form default:{' '}
+                          <span className="font-mono font-semibold text-[#0B0D0F]">
+                            {globalMotion.componentPreset}
+                          </span>{' '}
+                          ({globalMotion.durationMs}ms · {globalMotion.trigger.replace(/_/g, ' ')})
+                        </p>
+                      )}
+
+                      {mode === 'custom' && (
+                        <div className="space-y-2.5">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="font-semibold text-[#0B0D0F] block">Preset</label>
+                              <select
+                                disabled={isReadOnly}
+                                value={anim.preset || globalMotion.componentPreset}
+                                onChange={(e) => updateAnim({ preset: e.target.value as any })}
+                                className="w-full px-2 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.08]"
+                              >
+                                {COMPONENT_ENTRANCE_PRESETS.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="font-semibold text-[#0B0D0F] block">Trigger</label>
+                              <select
+                                disabled={isReadOnly}
+                                value={anim.trigger || globalMotion.trigger}
+                                onChange={(e) => updateAnim({ trigger: e.target.value as any })}
+                                className="w-full px-2 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.08]"
+                              >
+                                {ANIMATION_TRIGGER_OPTIONS.map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          {(anim.preset || globalMotion.componentPreset) !== 'none' && (
+                            <>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <label className="font-semibold text-[#0B0D0F] block">
+                                    Direction
+                                  </label>
+                                  <select
+                                    disabled={isReadOnly}
+                                    value={anim.direction || globalMotion.direction}
+                                    onChange={(e) =>
+                                      updateAnim({ direction: e.target.value as any })
+                                    }
+                                    className="w-full px-2 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.08]"
+                                  >
+                                    {ANIMATION_DIRECTION_OPTIONS.map((d) => (
+                                      <option key={d.id} value={d.id}>
+                                        {d.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="font-semibold text-[#0B0D0F] block">
+                                    Easing
+                                  </label>
+                                  <select
+                                    disabled={isReadOnly}
+                                    value={anim.easing || globalMotion.easing}
+                                    onChange={(e) => updateAnim({ easing: e.target.value as any })}
+                                    className="w-full px-2 py-1.5 rounded-lg bg-[#F7F6F3] border border-black/[0.08]"
+                                  >
+                                    {ANIMATION_EASING_OPTIONS.map((opt) => (
+                                      <option key={opt.id} value={opt.id}>
+                                        {opt.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2.5">
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <label className="font-semibold text-[#0B0D0F]">Duration</label>
+                                    <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                                      {anim.durationMs ?? globalMotion.durationMs}ms
+                                    </span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    disabled={isReadOnly}
+                                    min={ANIMATION_DURATION_MIN}
+                                    max={ANIMATION_DURATION_MAX}
+                                    step={20}
+                                    value={anim.durationMs ?? globalMotion.durationMs}
+                                    onChange={(e) =>
+                                      updateAnim({ durationMs: Number(e.target.value) })
+                                    }
+                                    className="w-full accent-[#0F766E]"
+                                  />
+                                </div>
+
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <label className="font-semibold text-[#0B0D0F]">Delay</label>
+                                    <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                                      {anim.delayMs ?? globalMotion.delayMs}ms
+                                    </span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    disabled={isReadOnly}
+                                    min={ANIMATION_DELAY_MIN}
+                                    max={ANIMATION_DELAY_MAX}
+                                    step={20}
+                                    value={anim.delayMs ?? globalMotion.delayMs}
+                                    onChange={(e) =>
+                                      updateAnim({ delayMs: Number(e.target.value) })
+                                    }
+                                    className="w-full accent-[#0F766E]"
+                                  />
+                                </div>
+                              </div>
+
+                              {(anim.preset || globalMotion.componentPreset) === 'stagger' && (
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <label className="font-semibold text-[#0B0D0F]">
+                                      Stagger Interval
+                                    </label>
+                                    <span className="font-mono text-[10px] text-[#5C6066] tabular-nums">
+                                      {anim.staggerIntervalMs ?? globalMotion.staggerIntervalMs}ms
+                                    </span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    disabled={isReadOnly}
+                                    min={STAGGER_INTERVAL_MIN}
+                                    max={STAGGER_INTERVAL_MAX}
+                                    step={10}
+                                    value={anim.staggerIntervalMs ?? globalMotion.staggerIntervalMs}
+                                    onChange={(e) =>
+                                      updateAnim({ staggerIntervalMs: Number(e.target.value) })
+                                    }
+                                    className="w-full accent-[#0F766E]"
+                                  />
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

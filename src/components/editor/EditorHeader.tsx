@@ -21,6 +21,7 @@ import {
   CaretLeft,
   CaretRight,
   Code,
+  PlugsConnected,
 } from '@phosphor-icons/react';
 import { FormSchema } from '../../types/form';
 import { CollaboratorPresence } from '../../types/team';
@@ -29,8 +30,26 @@ import { CanvasViewport } from '../../studio';
 interface EditorHeaderProps {
   form: FormSchema;
   onChangeTitle: (title: string) => void;
-  activeTab: 'build' | 'theme' | 'logic' | 'code' | 'settings' | 'share' | 'analytics';
-  setActiveTab: (tab: 'build' | 'theme' | 'logic' | 'code' | 'settings' | 'share' | 'analytics') => void;
+  activeTab:
+    | 'build'
+    | 'theme'
+    | 'logic'
+    | 'code'
+    | 'integrations'
+    | 'settings'
+    | 'share'
+    | 'analytics';
+  setActiveTab: (
+    tab:
+      | 'build'
+      | 'theme'
+      | 'logic'
+      | 'code'
+      | 'integrations'
+      | 'settings'
+      | 'share'
+      | 'analytics'
+  ) => void;
   onOpenPreview: () => void;
   onOpenAIGenerator: () => void;
   onBackToDashboard: () => void;
@@ -88,6 +107,7 @@ export const EditorHeader: React.FC<EditorHeaderProps> = ({
     { id: 'theme', label: 'Design', icon: Palette },
     { id: 'logic', label: `Rules (${form.logicRules.length})`, icon: GitBranch },
     { id: 'code', label: 'Code', icon: Code },
+    { id: 'integrations', label: 'Integrations', icon: PlugsConnected },
     { id: 'settings', label: 'Settings', icon: GearSix },
     { id: 'share', label: 'Share', icon: ShareNetwork },
     { id: 'analytics', label: `Answers (${form.responsesCount || 0})`, icon: ChartBar },

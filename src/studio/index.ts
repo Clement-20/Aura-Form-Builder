@@ -21,6 +21,7 @@ export * from './logic/migration';
 export * from './engines/history-engine';
 export * from './engines/theme-presets';
 export * from './engines/design-engine';
+export * from './engines/animation-engine';
 export * from './engines/logic-engine';
 export * from './engines/calculation-engine';
 export * from './engines/piping-engine';
@@ -37,3 +38,7 @@ export * from './engines/document-engine';
 export * from './engines/editor-engine';
 export * from './engines/OutcomeResultCard';
 export * from './engines/rendering-engine';
+
+// 5. Integrations & Webhooks Shared Types
+export * from './integrations/types';
+

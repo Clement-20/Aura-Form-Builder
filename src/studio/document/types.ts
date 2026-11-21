@@ -18,7 +18,33 @@ import {
   FormTheme,
   FormThankYouScreen,
   FormWelcomeScreen,
+  MOTION_SCHEMA_VERSION,
+  type ComponentAnimationConfig,
+  type FormMotionConfig,
+  type AnimationPresetType,
+  type AnimationDirection,
+  type AnimationEasing,
+  type AnimationTrigger,
+  type ProgressTransitionStyle,
+  type PageTransitionConfig,
+  type ConditionalRevealAnimationConfig,
+  type ResultScreenAnimationConfig,
+  type ProgressTransitionConfig,
 } from '../../types/form';
+export { MOTION_SCHEMA_VERSION };
+export type {
+  ComponentAnimationConfig,
+  FormMotionConfig,
+  AnimationPresetType,
+  AnimationDirection,
+  AnimationEasing,
+  AnimationTrigger,
+  ProgressTransitionStyle,
+  PageTransitionConfig,
+  ConditionalRevealAnimationConfig,
+  ResultScreenAnimationConfig,
+  ProgressTransitionConfig,
+};
 import { AnyLogicRule, LogicConditionGroup } from '../logic/types';
 
 export const DOCUMENT_SCHEMA_VERSION = 2 as const;
@@ -156,6 +182,8 @@ export interface ComponentAppearanceProps {
   customCss?: string;
   /** Allows temporarily disabling component-level custom CSS without losing it */
   customCssEnabled?: boolean;
+  /** Optional per-component animation & transition overrides */
+  animation?: ComponentAnimationConfig;
 }
 
 export interface ComponentLayoutProps {

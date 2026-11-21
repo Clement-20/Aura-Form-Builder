@@ -34,6 +34,7 @@ import { isRecord, repairFormDocument } from './validation';
 import { normalizeLogicRule, serializeStudioLogicRule } from '../logic/migration';
 import { AnyLogicRule } from '../logic/types';
 import { collectReferencedDefinitions } from '../engines/reusable-component-engine';
+import { sanitizeIntegrationMetadataForDocument } from '../integrations/types';
 
 /**
  * Optional lossless sidecar stored inside a legacy FormField when serializing v2 -> v1.
@@ -315,6 +316,9 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
       responsive: (legacy.theme as any)?.responsive
         ? JSON.parse(JSON.stringify((legacy.theme as any).responsive))
         : undefined,
+      motion: (legacy.theme as any)?.motion
+        ? JSON.parse(JSON.stringify((legacy.theme as any).motion))
+        : undefined,
     },
     welcomeScreen: { ...legacy.welcomeScreen },
     thankYouScreen: { ...legacy.thankYouScreen },
@@ -330,7 +334,9 @@ export function migrateLegacyFormToDocument(input: FormSchema | FormDocument): F
     outcomes: restoredOutcomes,
     customCode: restoredCustomCode,
     componentDefinitions: restoredComponentDefinitions,
-    integrations: {},
+    integrations: sanitizeIntegrationMetadataForDocument(
+      (legacy.settings as unknown as Record<string, unknown> | undefined)?.studioIntegrations
+    ),
     metadata: {
       createdAt: legacy.createdAt || new Date().toISOString(),
       updatedAt: legacy.updatedAt || new Date().toISOString(),
@@ -455,6 +461,7 @@ export function serializeDocumentToLegacyForm(doc: FormDocument): FormSchema {
     studioOutcomes?: FormOutcomeConfig;
     studioCustomCode?: FormCustomCodeConfig;
     studioComponentDefinitions?: Record<string, ReusableComponentDefinition>;
+    studioIntegrations?: Record<string, unknown>;
   } = { ...repaired.settings };
 
   if (repaired.variables && repaired.variables.length > 0) {
@@ -491,6 +498,13 @@ export function serializeDocumentToLegacyForm(doc: FormDocument): FormSchema {
     serializedSettings.studioComponentDefinitions = referencedDefs;
   }
 
+  const sanitizedIntegrations = sanitizeIntegrationMetadataForDocument(repaired.integrations);
+  if (Object.keys(sanitizedIntegrations).length > 0) {
+    serializedSettings.studioIntegrations = sanitizedIntegrations;
+  } else {
+    delete serializedSettings.studioIntegrations;
+  }
+
   const legacyForm: FormSchema = {
     id: repaired.id,
     title: repaired.title,
@@ -501,6 +515,9 @@ export function serializeDocumentToLegacyForm(doc: FormDocument): FormSchema {
       ...repaired.design,
       ...(repaired.design.responsive
         ? { responsive: JSON.parse(JSON.stringify(repaired.design.responsive)) }
+        : {}),
+      ...(repaired.design.motion
+        ? { motion: JSON.parse(JSON.stringify(repaired.design.motion)) }
         : {}),
     } as FormSchema['theme'],
     welcomeScreen: { ...repaired.welcomeScreen },

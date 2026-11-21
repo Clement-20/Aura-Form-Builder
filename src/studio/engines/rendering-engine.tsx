@@ -11,7 +11,7 @@
  * responsive rules, conditional logic, dynamic branching, hidden-answer policies, and validation.
  */
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
 import {
   ArrowLeft,
@@ -35,6 +35,16 @@ import {
   resolveDesignTokens,
   ViewportMode,
 } from './design-engine';
+import {
+  normalizeFormMotionConfig,
+  resolveComponentAnimation,
+  resolvePageTransition,
+  resolveProgressBarTransition,
+  resolveResultScreenAnimation,
+  type NavigationDirection,
+  type ResolvedComponentAnimation,
+  type TransitionPhase,
+} from './animation-engine';
 import { defaultLogicEngine, ILogicEngine } from './logic-engine';
 import { IncrementalCalculationCache } from './calculation-engine';
 import { pipeComponentNode, PipingContext, resolvePipedText } from './piping-engine';
@@ -106,7 +116,87 @@ export interface FormDocumentRendererProps {
   onSandboxLog?: (message: string) => void;
   /** Creator-only callback receiving sanitized runtime errors from the isolated JS sandbox */
   onSandboxError?: (errorMessage: string) => void;
+  /** Optional preview-only override to simulate prefers-reduced-motion: reduce */
+  forceReducedMotion?: boolean;
+  /** Optional monotonic counter to replay entrance animations on demand in Editor / ThemeStudio */
+  animationReplayNonce?: number;
 }
+
+interface AnimatedFormBlockProps {
+  componentId: string;
+  componentType: string;
+  animation: ResolvedComponentAnimation;
+  replayKey: string;
+  className: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}
+
+const AnimatedFormBlock: React.FC<AnimatedFormBlockProps> = ({
+  componentId,
+  componentType,
+  animation,
+  replayKey,
+  className,
+  style,
+  children,
+}) => {
+  const blockRef = useRef<HTMLDivElement | null>(null);
+  const [hasEnteredViewport, setHasEnteredViewport] = useState(
+    () => !animation.needsViewportObserver || typeof IntersectionObserver === 'undefined'
+  );
+
+  useEffect(() => {
+    if (!animation.needsViewportObserver) {
+      setHasEnteredViewport(true);
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setHasEnteredViewport(true);
+      return;
+    }
+    const el = blockRef.current;
+    if (!el) return;
+
+    setHasEnteredViewport(false);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setHasEnteredViewport(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.08, rootMargin: '0px 0px -16px 0px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [animation.needsViewportObserver, replayKey]);
+
+  const animClass = !animation.active
+    ? ''
+    : animation.needsViewportObserver && !hasEnteredViewport
+    ? 'fs-anim-awaiting-viewport'
+    : animation.className;
+
+  const mergedStyle: React.CSSProperties | undefined =
+    animation.active && (!animation.needsViewportObserver || hasEnteredViewport)
+      ? { ...(style || {}), ...animation.style }
+      : style;
+
+  return (
+    <div
+      ref={blockRef}
+      data-fs-component={componentId}
+      data-fs-type={componentType}
+      data-fs-anim-preset={animation.active ? animation.preset : 'none'}
+      data-fs-anim-trigger={animation.trigger}
+      className={`${className} ${animClass}`.trim()}
+      style={mergedStyle}
+    >
+      {children}
+    </div>
+  );
+};
 
 export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
   source,
@@ -121,12 +211,40 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
   scopeInstanceSuffix,
   onSandboxLog,
   onSandboxError,
+  forceReducedMotion = false,
+  animationReplayNonce = 0,
 }) => {
   const document = useMemo(() => migrateLegacyFormToDocument(source), [source]);
   const effectiveViewport: ViewportMode = viewportOverride || 'desktop';
   const tokens = useMemo(
     () => resolveDesignTokens(document.design, effectiveViewport),
     [document.design, effectiveViewport]
+  );
+  const motionConfig = useMemo(
+    () => normalizeFormMotionConfig(document.design),
+    [document.design]
+  );
+
+  // Reactive prefers-reduced-motion media query listener
+  const [osReducedMotion, setOsReducedMotion] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = (e: MediaQueryListEvent) => setOsReducedMotion(e.matches);
+    setOsReducedMotion(mq.matches);
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    return undefined;
+  }, []);
+
+  const effectiveReducedMotion = Boolean(
+    forceReducedMotion || (osReducedMotion && motionConfig.respectReducedMotion)
   );
 
   // Scoped custom CSS (strictly isolated to this form instance)
@@ -185,6 +303,23 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
   } | null>(null);
   const startTimeRef = useRef(Date.now());
   const calculationCacheRef = useRef(new IncrementalCalculationCache());
+  const isSubmittingRef = useRef(false);
+  const transitionTimerRef = useRef<number | null>(null);
+  const prevVisibleIdsRef = useRef<Set<string> | null>(null);
+
+  // Page & conversational transition state
+  const [transitionPhase, setTransitionPhase] = useState<TransitionPhase>('idle');
+  const [transitionDirection, setTransitionDirection] = useState<NavigationDirection>('forward');
+  const [stepTransitionTick, setStepTransitionTick] = useState<number>(0);
+  const [justRevealedIds, setJustRevealedIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    return () => {
+      if (transitionTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(transitionTimerRef.current);
+      }
+    };
+  }, []);
 
   // Resolve current page safely even if document pages changed
   const activePage =
@@ -201,6 +336,24 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       }),
     [logicEngine, document, answers, activePageId]
   );
+
+  // Track components that just transitioned from hidden -> visible for `on_conditional_show`
+  useEffect(() => {
+    const currentSet = logicResult.visibleComponentIds;
+    const prevSet = prevVisibleIdsRef.current;
+    if (prevSet) {
+      const newlyVisible: string[] = [];
+      currentSet.forEach((id) => {
+        if (!prevSet.has(id)) newlyVisible.push(id);
+      });
+      if (newlyVisible.length > 0) {
+        setJustRevealedIds(new Set(newlyVisible));
+      } else if (justRevealedIds.size > 0) {
+        setJustRevealedIds(new Set());
+      }
+    }
+    prevVisibleIdsRef.current = new Set(currentSet);
+  }, [logicResult.visibleComponentIds]);
 
   // Merge live calculated component values over user answers for rendering
   const effectiveAnswers = useMemo(() => {
@@ -527,6 +680,9 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     endedEarly?: boolean;
     endedOnPageId?: string;
   }) => {
+    // Duplicate submission guard: never fire onSubmit twice during transitions or rapid double-clicks
+    if (isSubmittingRef.current || submitted) return;
+
     const durationSeconds = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000));
     const endedEarlyFlag = Boolean(customEnd?.endedEarly || logicResult.endFormTriggered);
     const endedOnPageId = customEnd?.endedOnPageId || effectiveSteppedPageId || activePageId;
@@ -542,6 +698,13 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       setErrors(validation.errors);
       return;
     }
+
+    isSubmittingRef.current = true;
+    if (transitionTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+    setTransitionPhase('idle');
 
     if (validation.scoring?.enabled) {
       setResolvedScoring(validation.scoring);
@@ -610,13 +773,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     }
     setSubmitted(true);
 
-    const prefersReduced =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (
-      document.design.enableConfetti &&
-      !(document.design.respectReducedMotion !== false && prefersReduced)
-    ) {
+    if (document.design.enableConfetti && !effectiveReducedMotion) {
       try {
         confetti({ particleCount: 70, spread: 65, origin: { y: 0.65 } });
       } catch {
@@ -625,7 +782,122 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     }
   };
 
+  // Push safe browser history state for published multi-page / conversational navigation (preserves answers)
+  const pushFormHistoryEntry = useCallback(
+    (entry: {
+      pageId: string;
+      componentId: string | null;
+      pageHistory: string[];
+      componentHistory: string[];
+    }) => {
+      if (isPreview || embedded || typeof window === 'undefined' || !window.history?.pushState) {
+        return;
+      }
+      try {
+        window.history.pushState(
+          {
+            __fsFormNav: true,
+            formId: document.id,
+            ...entry,
+          },
+          ''
+        );
+      } catch {
+        // Ignore SecurityError in sandboxed iframes
+      }
+    },
+    [isPreview, embedded, document.id]
+  );
+
+  // Direction-aware transition runner for both stepped pages and conversational 1-by-1 views
+  const runStepTransition = useCallback(
+    (
+      direction: NavigationDirection,
+      applyNavigation: () => void,
+      historySnapshot?: {
+        pageId: string;
+        componentId: string | null;
+        pageHistory: string[];
+        componentHistory: string[];
+      }
+    ) => {
+      if (transitionTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(transitionTimerRef.current);
+        transitionTimerRef.current = null;
+      }
+
+      const exitPlan = resolvePageTransition(document.design, {
+        phase: 'exiting',
+        navDirection: direction,
+        viewport: effectiveViewport,
+        reducedMotion: effectiveReducedMotion,
+      });
+
+      const enterPlan = resolvePageTransition(document.design, {
+        phase: 'entering',
+        navDirection: direction,
+        viewport: effectiveViewport,
+        reducedMotion: effectiveReducedMotion,
+      });
+
+      setTransitionDirection(direction);
+
+      const finishEnter = () => {
+        applyNavigation();
+        if (historySnapshot) {
+          pushFormHistoryEntry(historySnapshot);
+        }
+        setStepTransitionTick((t) => t + 1);
+        if (enterPlan.active && enterPlan.enterDurationMs > 0 && typeof window !== 'undefined') {
+          setTransitionPhase('entering');
+          transitionTimerRef.current = window.setTimeout(() => {
+            setTransitionPhase('idle');
+            transitionTimerRef.current = null;
+          }, enterPlan.enterDurationMs + 20);
+        } else {
+          setTransitionPhase('idle');
+        }
+      };
+
+      if (exitPlan.active && exitPlan.exitDurationMs > 0 && typeof window !== 'undefined') {
+        setTransitionPhase('exiting');
+        transitionTimerRef.current = window.setTimeout(() => {
+          transitionTimerRef.current = null;
+          finishEnter();
+        }, exitPlan.exitDurationMs);
+      } else {
+        finishEnter();
+      }
+    },
+    [document.design, effectiveViewport, effectiveReducedMotion, pushFormHistoryEntry]
+  );
+
+  // Support browser back/forward buttons on published multi-page / conversational forms while preserving answers
+  useEffect(() => {
+    if (isPreview || embedded || typeof window === 'undefined') return;
+    if (!isMultiPageStepped && !isConversational) return;
+
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state;
+      if (!state || state.__fsFormNav !== true || state.formId !== document.id) return;
+      setErrors({});
+      runStepTransition('backward', () => {
+        if (typeof state.pageId === 'string') setCurrentPageId(state.pageId);
+        if (state.componentId === null || typeof state.componentId === 'string') {
+          setCurrentComponentId(state.componentId);
+        }
+        if (Array.isArray(state.pageHistory)) setPageHistory(state.pageHistory);
+        if (Array.isArray(state.componentHistory)) setComponentHistory(state.componentHistory);
+      });
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isPreview, embedded, isMultiPageStepped, isConversational, document.id, runStepTransition]);
+
   const handleNextStep = () => {
+    if (transitionPhase === 'exiting' || isSubmittingRef.current || submitted) return;
+
     if (isConversational && activeConversationalNode) {
       const errs = validateNodes([activeConversationalNode]);
       if (Object.keys(errs).length > 0) {
@@ -654,10 +926,23 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       }
 
       if (next.kind === 'component') {
-        setComponentHistory((prev) => [...prev.slice(-40), activeConversationalNode.id]);
-        setCurrentComponentId(next.componentId);
+        const nextHistory = [...componentHistory.slice(-40), activeConversationalNode.id];
         const nextComp = document.components[next.componentId];
-        if (nextComp) setCurrentPageId(nextComp.pageId);
+        const nextPageId = nextComp ? nextComp.pageId : activePageId;
+        runStepTransition(
+          'forward',
+          () => {
+            setComponentHistory(nextHistory);
+            setCurrentComponentId(next.componentId);
+            if (nextComp) setCurrentPageId(nextComp.pageId);
+          },
+          {
+            pageId: nextPageId,
+            componentId: next.componentId,
+            pageHistory,
+            componentHistory: nextHistory,
+          }
+        );
         return;
       }
 
@@ -693,8 +978,20 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       }
 
       if (next.kind === 'page') {
-        setPageHistory((prev) => [...prev.slice(-40), effectiveSteppedPage.id]);
-        setCurrentPageId(next.pageId);
+        const nextPageHist = [...pageHistory.slice(-40), effectiveSteppedPage.id];
+        runStepTransition(
+          'forward',
+          () => {
+            setPageHistory(nextPageHist);
+            setCurrentPageId(next.pageId);
+          },
+          {
+            pageId: next.pageId,
+            componentId: currentComponentId,
+            pageHistory: nextPageHist,
+            componentHistory,
+          }
+        );
         return;
       }
 
@@ -703,18 +1000,34 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
   };
 
   const handlePreviousStep = () => {
+    if (transitionPhase === 'exiting' || isSubmittingRef.current) return;
     setErrors({});
     if (isConversational) {
       if (componentHistory.length > 0) {
         const prevCompId = componentHistory[componentHistory.length - 1];
-        setComponentHistory((prev) => prev.slice(0, -1));
-        setCurrentComponentId(prevCompId);
+        const nextCompHistory = componentHistory.slice(0, -1);
         const prevNode = document.components[prevCompId];
-        if (prevNode) setCurrentPageId(prevNode.pageId);
+        runStepTransition(
+          'backward',
+          () => {
+            setComponentHistory(nextCompHistory);
+            setCurrentComponentId(prevCompId);
+            if (prevNode) setCurrentPageId(prevNode.pageId);
+          },
+          {
+            pageId: prevNode ? prevNode.pageId : activePageId,
+            componentId: prevCompId,
+            pageHistory,
+            componentHistory: nextCompHistory,
+          }
+        );
       } else if (activeConversationalNode) {
         const idx = conversationalNodes.findIndex((n) => n.id === activeConversationalNode.id);
         if (idx > 0) {
-          setCurrentComponentId(conversationalNodes[idx - 1].id);
+          const prevCompId = conversationalNodes[idx - 1].id;
+          runStepTransition('backward', () => {
+            setCurrentComponentId(prevCompId);
+          });
         }
       }
       return;
@@ -723,12 +1036,27 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     if (isMultiPageStepped) {
       if (pageHistory.length > 0) {
         const prevPageId = pageHistory[pageHistory.length - 1];
-        setPageHistory((prev) => prev.slice(0, -1));
-        setCurrentPageId(prevPageId);
+        const nextPageHistory = pageHistory.slice(0, -1);
+        runStepTransition(
+          'backward',
+          () => {
+            setPageHistory(nextPageHistory);
+            setCurrentPageId(prevPageId);
+          },
+          {
+            pageId: prevPageId,
+            componentId: currentComponentId,
+            pageHistory: nextPageHistory,
+            componentHistory,
+          }
+        );
       } else {
         const visIdx = visiblePages.findIndex((p) => p.id === effectiveSteppedPageId);
         if (visIdx > 0) {
-          setCurrentPageId(visiblePages[visIdx - 1].id);
+          const prevPageId = visiblePages[visIdx - 1].id;
+          runStepTransition('backward', () => {
+            setCurrentPageId(prevPageId);
+          });
         }
       }
     }
@@ -774,6 +1102,9 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     setAnswers(initial);
     setErrors({});
     setSubmitted(false);
+    isSubmittingRef.current = false;
+    setTransitionPhase('idle');
+    setStepTransitionTick((t) => t + 1);
     setFinalScore(null);
     setResolvedScoring(null);
     setResolvedOutcome(null);
@@ -786,6 +1117,31 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     calculationCacheRef.current.clear();
     startTimeRef.current = Date.now();
   };
+
+  const resultScreenAnimation = useMemo(
+    () =>
+      resolveResultScreenAnimation(document.design, {
+        viewport: effectiveViewport,
+        reducedMotion: effectiveReducedMotion,
+      }),
+    [document.design, effectiveViewport, effectiveReducedMotion]
+  );
+
+  const pageTransition = useMemo(
+    () =>
+      resolvePageTransition(document.design, {
+        phase: transitionPhase,
+        navDirection: transitionDirection,
+        viewport: effectiveViewport,
+        reducedMotion: effectiveReducedMotion,
+      }),
+    [document.design, transitionPhase, transitionDirection, effectiveViewport, effectiveReducedMotion]
+  );
+
+  const progressBarTransitionStyle = useMemo(
+    () => resolveProgressBarTransition(document.design, effectiveReducedMotion),
+    [document.design, effectiveReducedMotion]
+  );
 
   const renderLogicMessageCallout = (msg: LogicMessage) => {
     const toneStyles: Record<
@@ -823,11 +1179,14 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
       <div
         key={msg.id}
         role={msg.tone === 'error' || msg.tone === 'warning' ? 'alert' : 'status'}
-        className={`flex items-start gap-2.5 px-3.5 py-2.5 border text-xs leading-relaxed ${tokens.borderRadiusClass}`}
+        className={`flex items-start gap-2.5 px-3.5 py-2.5 border text-xs leading-relaxed ${tokens.borderRadiusClass} ${
+          resultScreenAnimation.active ? resultScreenAnimation.className : ''
+        }`}
         style={{
           backgroundColor: t.bg,
           borderColor: t.border,
           color: t.text,
+          ...(resultScreenAnimation.active ? resultScreenAnimation.style : {}),
         }}
       >
         <Icon size={16} weight="fill" className="shrink-0 mt-0.5" />
@@ -844,7 +1203,11 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
     [logicResult.messages, document.components]
   );
 
-  const renderNode = (node: FormComponentNode, isInsideContainer = false): React.ReactNode => {
+  const renderNode = (
+    node: FormComponentNode,
+    isInsideContainer = false,
+    indexInContainer = 0
+  ): React.ReactNode => {
     const def = registry.get(node.type);
     const ct = resolveComponentTokens(node, document.design, effectiveViewport);
     if (ct.isHidden) return null;
@@ -872,7 +1235,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
         .filter((child): child is FormComponentNode =>
           Boolean(child && logicResult.visibleComponentIds.has(child.id))
         )
-        .map((child) => renderNode(child, true));
+        .map((child, childIdx) => renderNode(child, true, childIdx));
     }
 
     const anchoredMessages = logicResult.messages.filter(
@@ -883,11 +1246,29 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
 
     const sandboxHint = sandboxFieldHints[node.id];
 
+    const resolvedAnim = resolveComponentAnimation(node, document.design, {
+      indexInContainer,
+      viewport: effectiveViewport,
+      reducedMotion: effectiveReducedMotion,
+      justRevealedByLogic: justRevealedIds.has(node.id),
+      pageTransitionTick: stepTransitionTick,
+      forcePlay: animationReplayNonce > 0,
+    });
+
+    const replayKey = `${node.id}:${effectiveSteppedPageId}:${stepTransitionTick}:${animationReplayNonce}`;
+
     return (
-      <div
-        key={node.id}
-        data-fs-component={node.id}
-        data-fs-type={node.type}
+      <AnimatedFormBlock
+        key={
+          resolvedAnim.active &&
+          (animationReplayNonce > 0 || resolvedAnim.trigger === 'on_page_change')
+            ? replayKey
+            : node.id
+        }
+        componentId={node.id}
+        componentType={node.type}
+        animation={resolvedAnim}
+        replayKey={replayKey}
         className={`fs-field ${gridClass} ${ct.wrapperClassName} min-w-0 space-y-2`}
         style={def.isContainer ? undefined : ct.wrapperStyle}
       >
@@ -917,7 +1298,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
             <span>{sandboxHint}</span>
           </p>
         )}
-      </div>
+      </AnimatedFormBlock>
     );
   };
 
@@ -974,6 +1355,7 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
   return (
     <div
       data-fs-form-scope={formScopeId}
+      data-fs-reduced-motion={effectiveReducedMotion ? 'true' : undefined}
       className={`fs-form studio-surface relative w-full overflow-x-hidden flex flex-col justify-center ${
         embedded ? 'min-h-full py-6 px-3 sm:px-5' : 'min-h-[100dvh] py-8 sm:py-12 px-4 sm:px-6'
       } ${tokens.fontFamilyClass}`}
@@ -1073,8 +1455,14 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
         {/* Welcome Screen */}
         {!started && !submitted && (
           <div
-            className={`fs-card fs-welcome-screen ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-6 text-center`}
-            style={tokens.surfaceStyle}
+            key={`welcome:${animationReplayNonce}`}
+            className={`fs-card fs-welcome-screen ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-6 text-center ${
+              resultScreenAnimation.active ? resultScreenAnimation.className : ''
+            }`}
+            style={{
+              ...tokens.surfaceStyle,
+              ...(resultScreenAnimation.active ? resultScreenAnimation.style : {}),
+            }}
           >
             <div className={`w-full ${tokens.contentMaxWidthClass} mx-auto space-y-5`}>
               {document.welcomeScreen.coverImage && (
@@ -1177,10 +1565,11 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                     </div>
                     <div className="w-full h-1.5 rounded-full bg-black/[0.08] overflow-hidden">
                       <div
-                        className="fs-progress-fill h-full rounded-full transition-all duration-300"
+                        className="fs-progress-fill h-full rounded-full"
                         style={{
                           width: `${progressDisplay.barPercent}%`,
                           backgroundColor: primaryColor,
+                          ...progressBarTransitionStyle,
                         }}
                       />
                     </div>
@@ -1209,14 +1598,21 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                 </div>
               )}
 
-              {/* Conversational 1-by-1 View OR 12-Column Responsive Component Grid */}
-              {isConversational && activeConversationalNode ? (
-                <div className="py-2">{renderNode(activeConversationalNode, true)}</div>
-              ) : (
-                <div className={`grid grid-cols-12 ${tokens.componentGapClass}`}>
-                  {topLevelNodes.map((node) => renderNode(node, false))}
-                </div>
-              )}
+              {/* Conversational 1-by-1 View OR 12-Column Responsive Component Grid with Page Transition */}
+              <div
+                key={`step:${effectiveSteppedPageId}:${activeConversationalNode?.id || 'grid'}:${stepTransitionTick}:${animationReplayNonce}`}
+                data-fs-transition-phase={pageTransition.phase}
+                className={pageTransition.active ? pageTransition.className : undefined}
+                style={pageTransition.active ? pageTransition.style : undefined}
+              >
+                {isConversational && activeConversationalNode ? (
+                  <div className="py-2">{renderNode(activeConversationalNode, true, 0)}</div>
+                ) : (
+                  <div className={`grid grid-cols-12 ${tokens.componentGapClass}`}>
+                    {topLevelNodes.map((node, idx) => renderNode(node, false, idx))}
+                  </div>
+                )}
+              </div>
 
               {/* Navigation & Submit Footer */}
               <div
@@ -1227,8 +1623,9 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                   {canGoBack && (
                     <button
                       type="button"
+                      disabled={transitionPhase === 'exiting'}
                       onClick={handlePreviousStep}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border transition-colors hover:opacity-80"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border transition-colors hover:opacity-80 disabled:opacity-50"
                       style={{
                         borderColor: tokens.colors.border,
                         color: tokens.colors.text,
@@ -1243,7 +1640,8 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
                 <div className={document.design.buttonFullWidth ? 'w-full' : ''}>
                   <button
                     type="submit"
-                    className={`fs-submit-btn ${tokens.buttonClassName}`}
+                    disabled={transitionPhase === 'exiting' || submitted}
+                    className={`fs-submit-btn ${tokens.buttonClassName} disabled:opacity-60`}
                     style={tokens.buttonStyle}
                   >
                     <span>{primaryActionLabel}</span>
@@ -1257,15 +1655,21 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
 
         {/* Personalised Outcome Screen OR Standard Thank You / Early Completion Screen */}
         {submitted && resolvedOutcome && !earlyEndCopy?.title && !earlyEndCopy?.message && (
-          <OutcomeResultCard
-            outcome={resolvedOutcome}
-            scoring={resolvedScoring}
-            design={document.design}
-            viewport={effectiveViewport}
-            isPreview={isPreview}
-            showRestartButton={Boolean(document.thankYouScreen.showRestartButton)}
-            onRestart={handleRestart}
-          />
+          <div
+            key={`outcome:${resolvedOutcome.outcomeId}:${animationReplayNonce}`}
+            className={resultScreenAnimation.active ? resultScreenAnimation.className : undefined}
+            style={resultScreenAnimation.active ? resultScreenAnimation.style : undefined}
+          >
+            <OutcomeResultCard
+              outcome={resolvedOutcome}
+              scoring={resolvedScoring}
+              design={document.design}
+              viewport={effectiveViewport}
+              isPreview={isPreview}
+              showRestartButton={Boolean(document.thankYouScreen.showRestartButton)}
+              onRestart={handleRestart}
+            />
+          </div>
         )}
 
         {submitted && (!resolvedOutcome || Boolean(earlyEndCopy?.title || earlyEndCopy?.message)) && (
@@ -1282,8 +1686,14 @@ export const FormDocumentRenderer: React.FC<FormDocumentRendererProps> = ({
 
             return (
               <div
-                className={`fs-card fs-thankyou-screen ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-5 text-center`}
-                style={tokens.surfaceStyle}
+                key={`thankyou:${animationReplayNonce}`}
+                className={`fs-card fs-thankyou-screen ${tokens.internalPaddingClass} ${tokens.borderRadiusClass} space-y-5 text-center ${
+                  resultScreenAnimation.active ? resultScreenAnimation.className : ''
+                }`}
+                style={{
+                  ...tokens.surfaceStyle,
+                  ...(resultScreenAnimation.active ? resultScreenAnimation.style : {}),
+                }}
               >
                 <div
                   className="w-14 h-14 rounded-2xl mx-auto flex items-center justify-center"

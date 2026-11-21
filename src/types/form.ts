@@ -159,6 +159,101 @@ export interface FormTheme {
   respectReducedMotion?: boolean;
   videoBackgroundUrl?: string;
   enableConfetti?: boolean;
+  /** Structured Phase 3.3 animation and transition configuration */
+  motion?: FormMotionConfig;
+}
+
+export const MOTION_SCHEMA_VERSION = 1 as const;
+
+export type AnimationPresetType =
+  | 'none'
+  | 'fade_in'
+  | 'fade_out'
+  | 'slide_in'
+  | 'slide_out'
+  | 'scale_in'
+  | 'scale_out'
+  | 'subtle_zoom'
+  | 'reveal'
+  | 'stagger';
+
+export type AnimationDirection = 'auto' | 'up' | 'down' | 'left' | 'right';
+
+export type AnimationEasing = 'ease' | 'ease-out' | 'ease-in-out' | 'spring' | 'linear';
+
+export type AnimationTrigger =
+  | 'on_page_load'
+  | 'on_viewport_enter'
+  | 'on_conditional_show'
+  | 'on_page_change'
+  | 'on_conditional_result';
+
+export type ProgressTransitionStyle = 'smooth' | 'spring' | 'linear' | 'none';
+
+export interface ComponentAnimationConfig {
+  /** 'inherit' follows form defaults; 'custom' uses local settings; 'disabled' turns off animation on this component */
+  mode?: 'inherit' | 'custom' | 'disabled';
+  preset?: AnimationPresetType;
+  durationMs?: number;
+  delayMs?: number;
+  direction?: AnimationDirection;
+  easing?: AnimationEasing;
+  trigger?: Exclude<AnimationTrigger, 'on_conditional_result'>;
+  staggerIntervalMs?: number;
+}
+
+export interface PageTransitionConfig {
+  enabled: boolean;
+  enterPreset: Exclude<AnimationPresetType, 'fade_out' | 'slide_out' | 'scale_out' | 'stagger'>;
+  exitPreset: 'none' | 'fade_out' | 'slide_out' | 'scale_out';
+  durationMs: number;
+  easing: AnimationEasing;
+  direction: AnimationDirection;
+}
+
+export interface ConditionalRevealAnimationConfig {
+  enabled: boolean;
+  preset: Exclude<AnimationPresetType, 'fade_out' | 'slide_out' | 'scale_out' | 'stagger'>;
+  durationMs: number;
+  direction: AnimationDirection;
+  easing: AnimationEasing;
+}
+
+export interface ResultScreenAnimationConfig {
+  enabled: boolean;
+  preset: Exclude<AnimationPresetType, 'fade_out' | 'slide_out' | 'scale_out' | 'stagger'>;
+  durationMs: number;
+  direction: AnimationDirection;
+  easing: AnimationEasing;
+}
+
+export interface ProgressTransitionConfig {
+  style: ProgressTransitionStyle;
+  durationMs: number;
+}
+
+export interface FormMotionConfig {
+  schemaVersion: typeof MOTION_SCHEMA_VERSION;
+  /** Master toggle to enable or disable all form animations globally */
+  enabled: boolean;
+  /** Honors OS prefers-reduced-motion: reduce (default true) */
+  respectReducedMotion: boolean;
+  /** Default entrance animation applied to form components */
+  componentPreset: Exclude<AnimationPresetType, 'fade_out' | 'slide_out' | 'scale_out'>;
+  durationMs: number;
+  delayMs: number;
+  direction: AnimationDirection;
+  easing: AnimationEasing;
+  trigger: Exclude<AnimationTrigger, 'on_conditional_result'>;
+  staggerIntervalMs: number;
+  /** Page-to-page (stepped) and question-to-question (conversational) transitions */
+  pageTransition: PageTransitionConfig;
+  /** Animation used when conditional logic reveals a hidden component or message */
+  conditionalReveal: ConditionalRevealAnimationConfig;
+  /** Animation used when outcome cards, thank-you screens, or conditional results appear */
+  resultScreen: ResultScreenAnimationConfig;
+  /** Progress bar fill transition style */
+  progressTransition: ProgressTransitionConfig;
 }
 
 export interface CustomThemePreset {

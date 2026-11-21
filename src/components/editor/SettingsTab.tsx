@@ -1,15 +1,9 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { FormSchema, FormSettings } from '../../types/form';
 import {
-  Globe,
   Award,
   Send,
-  Bell,
-  Lock,
   Download,
-  Upload,
-  Check,
-  AlertCircle,
   ExternalLink,
 } from 'lucide-react';
 
@@ -17,55 +11,16 @@ interface SettingsTabProps {
   form: FormSchema;
   onUpdateSettings: (settings: FormSettings) => void;
   onExportSchema: () => void;
+  onOpenIntegrations?: () => void;
 }
 
 export const SettingsTab: React.FC<SettingsTabProps> = ({
   form,
   onUpdateSettings,
   onExportSchema,
+  onOpenIntegrations,
 }) => {
   const { settings } = form;
-  const [webhookTestStatus, setWebhookTestStatus] = useState<{
-    loading: boolean;
-    success?: boolean;
-    message?: string;
-  }>({ loading: false });
-
-  const handleTestWebhook = async () => {
-    setWebhookTestStatus({ loading: true });
-
-    try {
-      const response = await fetch('/api/webhook/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: 'form_submission.test',
-          formId: form.id,
-          formTitle: form.title,
-          timestamp: new Date().toISOString(),
-          samplePayload: {
-            field_name: 'Elena Vance',
-            field_email: 'elena@studio.design',
-          },
-        }),
-      });
-
-      const data = await response.json();
-      setWebhookTestStatus({
-        loading: false,
-        success: response.ok,
-        message: response.ok
-          ? `Webhook endpoint responded 200 OK (${new Date().toLocaleTimeString()})`
-          : 'Webhook endpoint returned error.',
-      });
-    } catch (e: any) {
-      setWebhookTestStatus({
-        loading: false,
-        success: false,
-        message: e.message || 'Failed to ping webhook URL.',
-      });
-    }
-  };
 
   return (
     <div className="flex-1 overflow-y-auto h-[calc(100vh-3.5rem)] bg-neutral-50 p-4 sm:p-8">
@@ -289,56 +244,32 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           </div>
         </div>
 
-        {/* Webhooks & API Integration */}
-        <div className="bg-white p-5 rounded-xl border border-neutral-200/80 shadow-xs space-y-4 text-xs">
-          <div className="flex items-center gap-2">
-            <Send className="w-4 h-4 text-neutral-700" />
-            <span className="font-semibold text-neutral-800 uppercase tracking-wider text-[11px]">
-              Webhook Event Integration
-            </span>
-          </div>
-
-          <p className="text-neutral-500">
-            Transmit real-time JSON payloads whenever a respondent submits this form (compatible with Zapier, Make, n8n, Slack, or custom API endpoints).
-          </p>
-
-          <div className="space-y-2">
-            <label className="font-medium text-neutral-700">Webhook POST URL</label>
-            <div className="flex gap-2">
-              <input
-                type="url"
-                value={settings.webhookUrl || ''}
-                onChange={(e) =>
-                  onUpdateSettings({ ...settings, webhookUrl: e.target.value })
-                }
-                placeholder="https://hooks.zapier.com/hooks/catch/..."
-                className="flex-1 px-3 py-1.5 font-mono border rounded-md border-neutral-200 focus:border-neutral-900"
-              />
+        {/* Webhooks & Integrations Studio Bridge */}
+        <div className="bg-white p-5 rounded-xl border border-neutral-200/80 shadow-xs space-y-3 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Send className="w-4 h-4 text-[#0F766E]" />
+              <span className="font-semibold text-neutral-800 uppercase tracking-wider text-[11px]">
+                Integrations & Signed Webhooks
+              </span>
+            </div>
+            {onOpenIntegrations && (
               <button
                 type="button"
-                onClick={handleTestWebhook}
-                disabled={webhookTestStatus.loading}
-                className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-semibold rounded-md transition-colors shrink-0"
+                onClick={onOpenIntegrations}
+                className="px-3 py-1.5 bg-[#0B0D0F] hover:bg-[#191D21] text-white font-semibold rounded-lg transition-colors flex items-center gap-1.5 shrink-0"
               >
-                {webhookTestStatus.loading ? 'Pinging...' : 'Send Test Event'}
+                <span>Open Integrations Studio</span>
+                <ExternalLink className="w-3.5 h-3.5" />
               </button>
-            </div>
-
-            {webhookTestStatus.message && (
-              <p
-                className={`text-[11px] font-medium flex items-center gap-1.5 pt-1 ${
-                  webhookTestStatus.success ? 'text-emerald-600' : 'text-rose-600'
-                }`}
-              >
-                {webhookTestStatus.success ? (
-                  <Check className="w-3.5 h-3.5" />
-                ) : (
-                  <AlertCircle className="w-3.5 h-3.5" />
-                )}
-                <span>{webhookTestStatus.message}</span>
-              </p>
             )}
           </div>
+
+          <p className="text-neutral-500 leading-relaxed">
+            Configure signed HTTPS webhooks, Slack channel notifications, and custom REST API
+            connectors with field-level data filtering, payload previews, secret rotation, automatic
+            retries, and full delivery logs in the Integrations tab.
+          </p>
         </div>
 
         {/* Schema Portability & Backup */}
